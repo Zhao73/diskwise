@@ -57,7 +57,9 @@ impl Plan {
     }
 
     pub fn load(id: &str) -> Result<Plan> {
-        let p = home_dir().join(".diskwise/plans").join(format!("{id}.json"));
+        let p = home_dir()
+            .join(".diskwise/plans")
+            .join(format!("{id}.json"));
         let raw = std::fs::read(&p).with_context(|| format!("no such plan: {id}"))?;
         Ok(serde_json::from_slice(&raw)?)
     }
@@ -88,7 +90,9 @@ pub fn apply(plan: &Plan, guard: &Guard) -> Vec<Outcome> {
                 Err(d) => Err(anyhow!("{d}")),
                 Ok(()) => match item.action {
                     Action::Trash if item.older_than.is_none() => trash(&item.path).map(|_| None),
-                    Action::Trash => trash_older_than(&item.path, item.older_than.unwrap()).map(|_| None),
+                    Action::Trash => {
+                        trash_older_than(&item.path, item.older_than.unwrap()).map(|_| None)
+                    }
                     Action::Archive => archive_filtered(&item.path, item.older_than).map(Some),
                 },
             };
@@ -126,7 +130,10 @@ pub fn archive(src: &Path) -> Result<PathBuf> {
 /// timestamp are taken, and only those files are released afterwards.
 pub fn archive_filtered(src: &Path, older_than: Option<i64>) -> Result<PathBuf> {
     if !src.is_dir() {
-        bail!("{} is not a directory; archiving is for directory trees", src.display());
+        bail!(
+            "{} is not a directory; archiving is for directory trees",
+            src.display()
+        );
     }
     let dir = archives_dir();
     std::fs::create_dir_all(&dir)?;
@@ -142,7 +149,10 @@ pub fn archive_filtered(src: &Path, older_than: Option<i64>) -> Result<PathBuf> 
         Some(cutoff) => {
             let files = stale_files(src, cutoff);
             if files.is_empty() {
-                bail!("nothing in {} is older than the retention window", src.display());
+                bail!(
+                    "nothing in {} is older than the retention window",
+                    src.display()
+                );
             }
             files
         }
@@ -176,7 +186,10 @@ pub fn archive_filtered(src: &Path, older_than: Option<i64>) -> Result<PathBuf> 
         uncompressed: bytes,
         compressed: std::fs::metadata(&out)?.len(),
     };
-    std::fs::write(dir.join(format!("{name}.index.json")), serde_json::to_vec_pretty(&manifest)?)?;
+    std::fs::write(
+        dir.join(format!("{name}.index.json")),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
 
     // Only now is the original expendable.
     match older_than {
@@ -222,7 +235,10 @@ fn release(files: &[PathBuf], src: &Path) -> Result<()> {
 pub fn trash_older_than(dir: &Path, cutoff: i64) -> Result<()> {
     let files = stale_files(dir, cutoff);
     if files.is_empty() {
-        bail!("nothing in {} is older than the retention window", dir.display());
+        bail!(
+            "nothing in {} is older than the retention window",
+            dir.display()
+        );
     }
     release(&files, dir)
 }
@@ -267,10 +283,14 @@ pub fn restore(archive: &Path, dest: Option<&Path>) -> Result<PathBuf> {
     let dest = match dest {
         Some(d) => d.to_path_buf(),
         None => {
-            let raw = std::fs::read(&manifest_path)
-                .with_context(|| format!("need --to: no manifest at {}", manifest_path.display()))?;
+            let raw = std::fs::read(&manifest_path).with_context(|| {
+                format!("need --to: no manifest at {}", manifest_path.display())
+            })?;
             let m: Manifest = serde_json::from_slice(&raw)?;
-            m.source.parent().map(Path::to_path_buf).ok_or_else(|| anyhow!("bad manifest source"))?
+            m.source
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| anyhow!("bad manifest source"))?
         }
     };
     std::fs::create_dir_all(&dest)?;
@@ -316,11 +336,24 @@ fn slug(p: &Path) -> String {
     let rel = p.strip_prefix(home_dir()).unwrap_or(p);
     let parts: Vec<String> = rel
         .components()
-        .map(|c| c.as_os_str().to_string_lossy().trim_start_matches('.').to_string())
+        .map(|c| {
+            c.as_os_str()
+                .to_string_lossy()
+                .trim_start_matches('.')
+                .to_string()
+        })
         .filter(|s| !s.is_empty())
         .collect();
     let tail = parts[parts.len().saturating_sub(5)..].join("-");
-    tail.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' || c == '_' { c } else { '-' }).collect()
+    tail.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '.' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -329,8 +362,14 @@ mod slug_tests {
 
     #[test]
     fn slug_reads_like_the_path_it_came_from() {
-        assert_eq!(slug(&home_dir().join(".codex/sessions/2026/06/09")), "codex-sessions-2026-06-09");
-        assert_eq!(slug(&home_dir().join("App/proj/node_modules")), "App-proj-node_modules");
+        assert_eq!(
+            slug(&home_dir().join(".codex/sessions/2026/06/09")),
+            "codex-sessions-2026-06-09"
+        );
+        assert_eq!(
+            slug(&home_dir().join("App/proj/node_modules")),
+            "App-proj-node_modules"
+        );
     }
 }
 
@@ -349,7 +388,11 @@ fn stamp(secs: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}{m:02}{d:02}-{:02}{:02}", tod / 3600, (tod % 3600) / 60)
+    format!(
+        "{y:04}{m:02}{d:02}-{:02}{:02}",
+        tod / 3600,
+        (tod % 3600) / 60
+    )
 }
 
 #[cfg(test)]
@@ -374,12 +417,21 @@ mod tests {
 
         let archive = super::archive(&src).unwrap();
         assert!(archive.exists());
-        assert!(!src.exists(), "source is only given up after a successful verify");
+        assert!(
+            !src.exists(),
+            "source is only given up after a successful verify"
+        );
 
         let back = tmp.join("restored");
         restore(&archive, Some(&back)).unwrap();
-        assert_eq!(std::fs::read(back.join("payload/nested/b.bin")).unwrap(), vec![3u8; 200_000]);
-        assert_eq!(std::fs::read_to_string(back.join("payload/a.txt")).unwrap(), "hello ".repeat(5000));
+        assert_eq!(
+            std::fs::read(back.join("payload/nested/b.bin")).unwrap(),
+            vec![3u8; 200_000]
+        );
+        assert_eq!(
+            std::fs::read_to_string(back.join("payload/a.txt")).unwrap(),
+            "hello ".repeat(5000)
+        );
 
         std::fs::remove_file(&archive).ok();
         std::fs::remove_file(archive.with_extension("").with_extension("index.json")).ok();

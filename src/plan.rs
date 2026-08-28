@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
-
 use crate::actions::{new_plan_id, Action, Plan, PlanItem};
 use crate::policy::Guard;
 use crate::rules::Rules;
@@ -58,7 +56,13 @@ pub fn build(s: &Scan, rules: &Rules, guard: &Guard, opts: &PlanOptions) -> Plan
             // No retention window: the whole directory is fair game.
             None => candidates.push((
                 tier,
-                PlanItem { path: r.path, size: r.size, action, reason, older_than: None },
+                PlanItem {
+                    path: r.path,
+                    size: r.size,
+                    action,
+                    reason,
+                    older_than: None,
+                },
             )),
             Some(days) => {
                 let cutoff = now - (days as i64) * 86_400;
@@ -69,7 +73,9 @@ pub fn build(s: &Scan, rules: &Rules, guard: &Guard, opts: &PlanOptions) -> Plan
                             path: part.path,
                             size: part.size,
                             action,
-                            reason: format!("{reason} (only what has been untouched for {days}+ days)"),
+                            reason: format!(
+                                "{reason} (only what has been untouched for {days}+ days)"
+                            ),
                             older_than: part.older_than,
                         },
                     ));
@@ -83,7 +89,10 @@ pub fn build(s: &Scan, rules: &Rules, guard: &Guard, opts: &PlanOptions) -> Plan
     let mut total = 0u64;
     for (_, item) in candidates {
         // Never list a path already covered by an ancestor in the plan.
-        if items.iter().any(|i: &PlanItem| item.path.starts_with(&i.path)) {
+        if items
+            .iter()
+            .any(|i: &PlanItem| item.path.starts_with(&i.path))
+        {
             continue;
         }
         total += item.size;
@@ -120,12 +129,18 @@ fn settled_parts(s: &Scan, dir: &std::path::Path, cutoff: i64) -> Vec<Part> {
     let mut out = Vec::new();
     let mut queue = vec![(dir.to_path_buf(), 0usize)];
     while let Some((path, depth)) = queue.pop() {
-        let Some(entry) = s.dirs.get(&path) else { continue };
+        let Some(entry) = s.dirs.get(&path) else {
+            continue;
+        };
         if entry.total == 0 {
             continue;
         }
         if entry.newest < cutoff {
-            out.push(Part { path, size: entry.total, older_than: None });
+            out.push(Part {
+                path,
+                size: entry.total,
+                older_than: None,
+            });
             continue;
         }
         let children = s.children(&path);
@@ -143,16 +158,15 @@ fn settled_parts(s: &Scan, dir: &std::path::Path, cutoff: i64) -> Vec<Part> {
                 .map(|f| f.size)
                 .sum();
             if stale > 0 {
-                out.push(Part { path, size: stale, older_than: Some(cutoff) });
+                out.push(Part {
+                    path,
+                    size: stale,
+                    older_than: Some(cutoff),
+                });
             }
         }
     }
     out
-}
-
-/// Directories a plan would touch, for a quick "is this safe" glance.
-pub fn paths(plan: &Plan) -> Vec<PathBuf> {
-    plan.paths()
 }
 
 #[cfg(test)]
@@ -173,9 +187,21 @@ mod tests {
         let s = crate::scan::scan(&tmp);
         let rules = Rules::load_default().unwrap();
         let guard = Guard::new(Policy::default()).unwrap();
-        let plan = build(&s, &rules, &guard, &PlanOptions { min: 1 << 20, ..Default::default() });
+        let plan = build(
+            &s,
+            &rules,
+            &guard,
+            &PlanOptions {
+                min: 1 << 20,
+                ..Default::default()
+            },
+        );
 
-        assert_eq!(plan.items.len(), 1, "only the node_modules root, not its children");
+        assert_eq!(
+            plan.items.len(),
+            1,
+            "only the node_modules root, not its children"
+        );
         assert!(plan.items[0].path.ends_with("node_modules"));
         assert_eq!(plan.items[0].action, Action::Trash);
 
@@ -203,7 +229,10 @@ mod tests {
         let paths: Vec<String> = parts.iter().map(|p| p.path.display().to_string()).collect();
 
         assert_eq!(parts.len(), 1, "only the settled branch: {paths:?}");
-        assert!(paths[0].ends_with("2020"), "takes the whole settled branch, not leaf by leaf: {paths:?}");
+        assert!(
+            paths[0].ends_with("2020"),
+            "takes the whole settled branch, not leaf by leaf: {paths:?}"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -225,18 +254,29 @@ mod tests {
 
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].older_than, Some(cutoff));
-        assert!(parts[0].size >= 3_000_000 && parts[0].size < 4_000_000, "only the stale file");
+        assert!(
+            parts[0].size >= 3_000_000 && parts[0].size < 4_000_000,
+            "only the stale file"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
 
     fn now_secs() -> i64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
     }
 
     /// `filetime` would be another dependency for one line of test setup.
     fn filetime_set(path: &std::path::Path, when: std::time::SystemTime) {
         let f = std::fs::File::options().write(true).open(path).unwrap();
-        f.set_times(std::fs::FileTimes::new().set_accessed(when).set_modified(when)).unwrap();
+        f.set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(when)
+                .set_modified(when),
+        )
+        .unwrap();
     }
 }

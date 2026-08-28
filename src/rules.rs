@@ -81,7 +81,10 @@ impl Rules {
             let mut b = GlobSetBuilder::new();
             for pat in &rule.patterns {
                 let expanded = expand_home(pat, &home);
-                b.add(Glob::new(&expanded).with_context(|| format!("bad glob in rule {}: {pat}", rule.id))?);
+                b.add(
+                    Glob::new(&expanded)
+                        .with_context(|| format!("bad glob in rule {}: {pat}", rule.id))?,
+                );
                 // A rule that names a directory also owns everything inside it.
                 if !expanded.ends_with("**") {
                     b.add(Glob::new(&format!("{expanded}/**"))?);
@@ -89,7 +92,10 @@ impl Rules {
             }
             sets.push(b.build()?);
         }
-        Ok(Rules { rules: parsed.rule, sets })
+        Ok(Rules {
+            rules: parsed.rule,
+            sets,
+        })
     }
 
     /// The most specific verdict for a path. `protected` always wins so a bad
@@ -136,7 +142,9 @@ fn specificity(r: &Rule) -> usize {
 }
 
 pub fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 pub fn expand_home(pat: &str, home: &Path) -> String {
@@ -163,10 +171,14 @@ mod tests {
         assert_eq!(v.suggest, "archive");
 
         // Files inside a matched directory inherit its rule.
-        let v = r.classify(&home.join(".codex/sessions/2026/07/09/rollout.jsonl")).unwrap();
+        let v = r
+            .classify(&home.join(".codex/sessions/2026/07/09/rollout.jsonl"))
+            .unwrap();
         assert_eq!(v.rule_id, "codex-sessions");
 
-        let v = r.classify(Path::new("/Users/x/App/thing/node_modules")).unwrap();
+        let v = r
+            .classify(Path::new("/Users/x/App/thing/node_modules"))
+            .unwrap();
         assert_eq!(v.suggest, "trash");
         assert!(v.regenerable);
 
@@ -178,11 +190,15 @@ mod tests {
         let r = rules();
         let home = home_dir();
         for p in [".ssh", ".gnupg", "Library/Keychains"] {
-            let v = r.classify(&home.join(p)).unwrap_or_else(|| panic!("{p} unclassified"));
+            let v = r
+                .classify(&home.join(p))
+                .unwrap_or_else(|| panic!("{p} unclassified"));
             assert_eq!(v.suggest, "never", "{p} must be protected");
         }
         // A .git dir inside an otherwise-reclaimable tree still wins.
-        let v = r.classify(Path::new("/Users/x/App/thing/node_modules/.git")).unwrap();
+        let v = r
+            .classify(Path::new("/Users/x/App/thing/node_modules/.git"))
+            .unwrap();
         assert_eq!(v.suggest, "never");
     }
 }

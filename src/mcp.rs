@@ -34,13 +34,21 @@ pub fn serve() -> Result<()> {
         let req: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                write(&mut stdout, error_response(Value::Null, -32700, &format!("parse error: {e}")))?;
+                write(
+                    &mut stdout,
+                    error_response(Value::Null, -32700, &format!("parse error: {e}")),
+                )?;
                 continue;
             }
         };
         // Notifications have no id and expect no reply.
-        let Some(id) = req.get("id").cloned() else { continue };
-        let method = req.get("method").and_then(Value::as_str).unwrap_or_default();
+        let Some(id) = req.get("id").cloned() else {
+            continue;
+        };
+        let method = req
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let params = req.get("params").cloned().unwrap_or(json!({}));
 
         let response = match session.dispatch(method, params) {
@@ -79,13 +87,19 @@ impl Session {
             })),
             "tools/list" => Ok(json!({ "tools": tool_specs() })),
             "tools/call" => {
-                let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 match self.call(&name, args) {
                     // A refused action is a normal result an agent must read,
                     // not a transport error — so it comes back as isError text.
                     Ok(v) => Ok(json!({ "content": [text(&v)], "isError": false })),
-                    Err(e) => Ok(json!({ "content": [text(&json!(e.to_string()))], "isError": true })),
+                    Err(e) => {
+                        Ok(json!({ "content": [text(&json!(e.to_string()))], "isError": true }))
+                    }
                 }
             }
             "ping" => Ok(json!({})),
@@ -123,7 +137,12 @@ impl Session {
                 let rows = view::rows(
                     s,
                     &rules,
-                    &view::Query { min, category, limit, ..Default::default() },
+                    &view::Query {
+                        min,
+                        category,
+                        limit,
+                        ..Default::default()
+                    },
                 );
                 Ok(json!({
                     "root": s.root,
@@ -135,7 +154,10 @@ impl Session {
                 }))
             }
             "explain_path" => {
-                let target = PathBuf::from(path.clone().ok_or_else(|| anyhow::anyhow!("path is required"))?);
+                let target = PathBuf::from(
+                    path.clone()
+                        .ok_or_else(|| anyhow::anyhow!("path is required"))?,
+                );
                 let s = self.scan_for(target.parent().and_then(|p| p.to_str()));
                 let entry = s.dirs.get(&target);
                 Ok(json!({
@@ -152,7 +174,10 @@ impl Session {
                     target: num_arg("target_bytes").unwrap_or(0.0) as u64,
                     category: str_arg("category"),
                     min: num_arg("min_bytes").unwrap_or(100e6) as u64,
-                    include_archives: args.get("include_archives").and_then(Value::as_bool).unwrap_or(false),
+                    include_archives: args
+                        .get("include_archives")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 };
                 let s = self.scan_for(path.as_deref());
                 let p = plan::build(s, &rules, &guard, &opts);
@@ -170,7 +195,8 @@ impl Session {
                 }))
             }
             "apply_cleanup" => {
-                let plan_id = str_arg("plan_id").ok_or_else(|| anyhow::anyhow!("plan_id is required"))?;
+                let plan_id =
+                    str_arg("plan_id").ok_or_else(|| anyhow::anyhow!("plan_id is required"))?;
                 let p = actions::Plan::load(&plan_id)?;
                 if let Err(denial) = guard.check_unattended(&p.paths(), p.total()) {
                     // This is the whole point of the design: the agent is told
@@ -191,7 +217,8 @@ impl Session {
                 }))
             }
             "archive_path" => {
-                let target = PathBuf::from(path.ok_or_else(|| anyhow::anyhow!("path is required"))?);
+                let target =
+                    PathBuf::from(path.ok_or_else(|| anyhow::anyhow!("path is required"))?);
                 guard.check(&target).map_err(|d| anyhow::anyhow!("{d}"))?;
                 let out = actions::archive(&target)?;
                 Ok(json!({ "archive": out, "note": "verified before the original was released" }))
@@ -201,7 +228,9 @@ impl Session {
                 .map(|(p, m)| json!({ "archive": p, "manifest": m }))
                 .collect::<Vec<_>>())),
             "restore_archive" => {
-                let archive = PathBuf::from(str_arg("archive").ok_or_else(|| anyhow::anyhow!("archive is required"))?);
+                let archive = PathBuf::from(
+                    str_arg("archive").ok_or_else(|| anyhow::anyhow!("archive is required"))?,
+                );
                 let to = str_arg("to").map(PathBuf::from);
                 let dest = actions::restore(&archive, to.as_deref())?;
                 Ok(json!({ "restored_into": dest }))
@@ -211,11 +240,19 @@ impl Session {
                 if let Some(d) = num_arg("min_days") {
                     list.retain(|p| p.uptime as f64 >= d * 86_400.0);
                 }
-                if args.get("only_mine").and_then(Value::as_bool).unwrap_or(true) {
+                if args
+                    .get("only_mine")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+                {
                     let me = procs::whoami();
                     list.retain(|p| p.user == me);
                 }
-                if args.get("by_memory").and_then(Value::as_bool).unwrap_or(false) {
+                if args
+                    .get("by_memory")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     list.sort_by(|a, b| b.rss.cmp(&a.rss));
                 }
                 list.truncate(num_arg("limit").unwrap_or(25.0) as usize);
@@ -346,7 +383,9 @@ mod tests {
     use super::*;
 
     fn call(s: &mut Session, name: &str, args: Value) -> Value {
-        let v = s.dispatch("tools/call", json!({ "name": name, "arguments": args })).unwrap();
+        let v = s
+            .dispatch("tools/call", json!({ "name": name, "arguments": args }))
+            .unwrap();
         let text = v["content"][0]["text"].as_str().unwrap().to_string();
         serde_json::from_str(&text).unwrap_or(json!(text))
     }
@@ -371,9 +410,14 @@ mod tests {
     #[test]
     fn unknown_tools_come_back_as_readable_errors_not_crashes() {
         let mut s = Session::default();
-        let v = s.dispatch("tools/call", json!({ "name": "rm_rf", "arguments": {} })).unwrap();
+        let v = s
+            .dispatch("tools/call", json!({ "name": "rm_rf", "arguments": {} }))
+            .unwrap();
         assert_eq!(v["isError"], true);
-        assert!(v["content"][0]["text"].as_str().unwrap().contains("unknown tool"));
+        assert!(v["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unknown tool"));
     }
 
     /// The central promise: an agent cannot talk itself into deleting anything.
@@ -385,14 +429,24 @@ mod tests {
         std::fs::write(nm.join("big.bin"), vec![0u8; 3_000_000]).unwrap();
 
         let mut s = Session::default();
-        let planned = call(&mut s, "plan_cleanup", json!({ "path": tmp.to_str(), "min_bytes": 1_000_000 }));
+        let planned = call(
+            &mut s,
+            "plan_cleanup",
+            json!({ "path": tmp.to_str(), "min_bytes": 1_000_000 }),
+        );
         let plan_id = planned["plan_id"].as_str().unwrap().to_string();
         assert!(planned["would_free_bytes"].as_u64().unwrap() >= 3_000_000);
 
         let applied = call(&mut s, "apply_cleanup", json!({ "plan_id": plan_id }));
         assert_eq!(applied["applied"], false);
-        assert!(applied["user_must_run"].as_str().unwrap().starts_with("diskwise confirm"));
-        assert!(nm.join("big.bin").exists(), "nothing may be touched without confirmation");
+        assert!(applied["user_must_run"]
+            .as_str()
+            .unwrap()
+            .starts_with("diskwise confirm"));
+        assert!(
+            nm.join("big.bin").exists(),
+            "nothing may be touched without confirmation"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -401,9 +455,15 @@ mod tests {
     fn kill_process_refuses_protected_pids() {
         let mut s = Session::default();
         let v = s
-            .dispatch("tools/call", json!({ "name": "kill_process", "arguments": { "pid": 1 } }))
+            .dispatch(
+                "tools/call",
+                json!({ "name": "kill_process", "arguments": { "pid": 1 } }),
+            )
             .unwrap();
         assert_eq!(v["isError"], true);
-        assert!(v["content"][0]["text"].as_str().unwrap().contains("protected"));
+        assert!(v["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("protected"));
     }
 }

@@ -37,18 +37,43 @@ pub struct Proc {
 
 /// Processes whose death breaks the session or the OS. Never offered for kill.
 const CRITICAL: &[&str] = &[
-    "launchd", "kernel_task", "WindowServer", "loginwindow", "SystemUIServer", "Finder", "Dock",
-    "coreaudiod", "opendirectoryd", "securityd", "syslogd", "distnoted", "notifyd", "mds",
-    "mds_stores", "configd", "powerd", "hidd", "diskarbitrationd", "logd", "UserEventAgent",
+    "launchd",
+    "kernel_task",
+    "WindowServer",
+    "loginwindow",
+    "SystemUIServer",
+    "Finder",
+    "Dock",
+    "coreaudiod",
+    "opendirectoryd",
+    "securityd",
+    "syslogd",
+    "distnoted",
+    "notifyd",
+    "mds",
+    "mds_stores",
+    "configd",
+    "powerd",
+    "hidd",
+    "diskarbitrationd",
+    "logd",
+    "UserEventAgent",
 ];
 
 /// Anything shipped and managed by macOS. Killing these achieves nothing —
 /// launchd restarts them — and can wedge the session in the meantime.
 fn is_system_path(p: &std::path::Path) -> bool {
     let s = p.to_string_lossy();
-    ["/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/", "/usr/bin/", "/Library/Apple/"]
-        .iter()
-        .any(|prefix| s.starts_with(prefix))
+    [
+        "/System/",
+        "/usr/libexec/",
+        "/usr/sbin/",
+        "/sbin/",
+        "/usr/bin/",
+        "/Library/Apple/",
+    ]
+    .iter()
+    .any(|prefix| s.starts_with(prefix))
 }
 
 pub fn list() -> Result<Vec<Proc>> {
@@ -67,8 +92,15 @@ pub fn list() -> Result<Vec<Proc>> {
         .collect();
 
     let me = whoami();
-    let mut procs: Vec<Proc> = stats.lines().filter_map(|l| parse_line(l, &me, &cmdlines)).collect();
-    procs.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal));
+    let mut procs: Vec<Proc> = stats
+        .lines()
+        .filter_map(|l| parse_line(l, &me, &cmdlines))
+        .collect();
+    procs.sort_by(|a, b| {
+        b.cpu
+            .partial_cmp(&a.cpu)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok(procs)
 }
 
@@ -151,14 +183,26 @@ pub fn human_duration(secs: u64) -> String {
 /// process no chance to flush anything it was writing.
 pub fn kill(pid: i32, force: bool) -> Result<()> {
     let procs = list()?;
-    let p = procs.iter().find(|p| p.pid == pid).ok_or_else(|| anyhow!("no process with pid {pid}"))?;
+    let p = procs
+        .iter()
+        .find(|p| p.pid == pid)
+        .ok_or_else(|| anyhow!("no process with pid {pid}"))?;
     if p.protected {
-        bail!("{} (pid {pid}) is protected: it belongs to {} or the system", p.name, p.user);
+        bail!(
+            "{} (pid {pid}) is protected: it belongs to {} or the system",
+            p.name,
+            p.user
+        );
     }
     let sig = if force { "-KILL" } else { "-TERM" };
-    let out = Command::new("kill").args([sig, &pid.to_string()]).output()?;
+    let out = Command::new("kill")
+        .args([sig, &pid.to_string()])
+        .output()?;
     if !out.status.success() {
-        bail!("kill {sig} {pid}: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "kill {sig} {pid}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -182,13 +226,26 @@ mod tests {
         let procs = list().unwrap();
         // This very test binary was launched with arguments; its command line
         // must contain them, and must not be a mangled half of anything.
-        let me = procs.iter().find(|p| p.pid == std::process::id() as i32).unwrap();
+        let me = procs
+            .iter()
+            .find(|p| p.pid == std::process::id() as i32)
+            .unwrap();
         assert!(me.command.contains("diskwise"), "got {:?}", me.command);
-        assert!(me.path.as_ref().is_some_and(|p| p.is_absolute()), "got {:?}", me.path);
-        assert!(!me.name.contains(' '), "name should be a file name, got {:?}", me.name);
+        assert!(
+            me.path.as_ref().is_some_and(|p| p.is_absolute()),
+            "got {:?}",
+            me.path
+        );
+        assert!(
+            !me.name.contains(' '),
+            "name should be a file name, got {:?}",
+            me.name
+        );
 
         // Chrome-style paths with spaces must keep their real basename.
-        let spaced = procs.iter().find(|p| p.command.contains(".app/Contents/MacOS/"));
+        let spaced = procs
+            .iter()
+            .find(|p| p.command.contains(".app/Contents/MacOS/"));
         if let Some(p) = spaced {
             assert!(p.path.as_ref().unwrap().is_absolute());
         }
@@ -197,20 +254,33 @@ mod tests {
     #[test]
     fn lists_real_processes_and_protects_the_critical_ones() {
         let procs = list().unwrap();
-        assert!(procs.len() > 20, "a mac always has more processes than this");
+        assert!(
+            procs.len() > 20,
+            "a mac always has more processes than this"
+        );
 
-        let launchd = procs.iter().find(|p| p.pid == 1).expect("pid 1 must be listed");
+        let launchd = procs
+            .iter()
+            .find(|p| p.pid == 1)
+            .expect("pid 1 must be listed");
         assert!(launchd.protected);
         assert!(kill(1, false).is_err(), "killing launchd must be refused");
 
         // System daemons are off limits even though they run as us.
         let spotlight = procs.iter().find(|p| p.name.starts_with("spotlight"));
         if let Some(p) = spotlight {
-            assert!(p.protected, "{} runs from {:?} and must be protected", p.name, p.path);
+            assert!(
+                p.protected,
+                "{} runs from {:?} and must be protected",
+                p.name, p.path
+            );
         }
 
         // This test process is ours, running, and not critical.
-        let me = procs.iter().find(|p| p.pid == std::process::id() as i32).expect("self must be listed");
+        let me = procs
+            .iter()
+            .find(|p| p.pid == std::process::id() as i32)
+            .expect("self must be listed");
         assert!(!me.protected);
         assert!(me.uptime < 86_400);
     }

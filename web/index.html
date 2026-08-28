@@ -147,7 +147,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const state = { mode: 'tree', dir: null, root: '', user: '', category: '', min: 10485760, contains: '' };
+const state = { mode: 'tree', dir: null, root: '', user: '', scanning: false, category: '', min: 10485760, contains: '' };
 const fmt = b => {
   const u = ['B','KB','MB','GB','TB'];
   let i = 0; while (b >= 1000 && i < u.length - 1) { b /= 1000; i++; }
@@ -161,8 +161,10 @@ async function loadStatus() {
   state.root = s.root;
   state.user = s.user;
   if (!state.dir) state.dir = s.root;
-  $('summary').innerHTML = `<b>${fmt(s.total)}</b> in ${s.files.toLocaleString()} files
-    · ${s.root} ${s.scanning ? '· <b>rescanning…</b>' : ''}`;
+  $('summary').innerHTML = s.total === 0 && s.scanning
+    ? `scanning <b>${s.root}</b> — this takes about a minute the first time…`
+    : `<b>${fmt(s.total)}</b> in ${s.files.toLocaleString()} files
+       · ${s.root} ${s.scanning ? '· <b>rescanning…</b>' : ''}`;
   $('warn').innerHTML = s.denied > 20
     ? `<div class="warn">${s.denied} paths were unreadable. Grant Full Disk Access in
        System Settings → Privacy &amp; Security to see all of ~/Library.</div>` : '';
@@ -170,7 +172,10 @@ async function loadStatus() {
   if (sel.options.length === 1) {
     for (const c of s.categories) sel.add(new Option(c, c));
   }
-  if (s.scanning) setTimeout(loadStatus, 3000);
+  // Pull the rows in as soon as a background scan finishes.
+  if (s.scanning) setTimeout(loadStatus, 2000);
+  else if (state.scanning) load();
+  state.scanning = s.scanning;
 }
 
 async function load() {

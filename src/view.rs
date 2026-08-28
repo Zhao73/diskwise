@@ -1,7 +1,6 @@
 //! The one place that turns a raw scan into ranked, classified, filtered rows.
 //! CLI, web UI and MCP all go through here so they can never disagree.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use humansize::{format_size, DECIMAL};
@@ -42,11 +41,18 @@ pub struct Query {
 
 pub fn rows(s: &Scan, rules: &Rules, q: &Query) -> Vec<Row> {
     let mut out: Vec<Row> = if q.files_only {
-        s.big_files.iter().map(|f| file_row(rules, &f.path, f.size)).collect()
+        s.big_files
+            .iter()
+            .map(|f| file_row(rules, &f.path, f.size))
+            .collect()
     } else if let Some(dir) = &q.dir {
         // A directory listing mixes folders with the loose files beside them —
         // a 600MB sqlite file matters as much as a folder does.
-        let mut rows: Vec<Row> = s.children(dir).into_iter().map(|(p, e)| dir_row(rules, p, e.total, e.files)).collect();
+        let mut rows: Vec<Row> = s
+            .children(dir)
+            .into_iter()
+            .map(|(p, e)| dir_row(rules, p, e.total, e.files))
+            .collect();
         rows.extend(
             s.big_files
                 .iter()
@@ -73,8 +79,8 @@ pub fn rows(s: &Scan, rules: &Rules, q: &Query) -> Vec<Row> {
         out.retain(|r| r.path.to_string_lossy().to_lowercase().contains(&needle));
     }
     if q.dir.is_none() && !q.files_only && !q.keep_nested {
-        // Without this a deep tree prints the same bytes at every level.
-        out = drop_nested(out);
+        out.sort_by(|a, b| b.size.cmp(&a.size));
+        out = keep_informative(out);
     }
     out.sort_by(|a, b| b.size.cmp(&a.size));
     if q.limit > 0 {
@@ -83,11 +89,31 @@ pub fn rows(s: &Scan, rules: &Rules, q: &Query) -> Vec<Row> {
     out
 }
 
-/// Remove rows whose parent is also in the list, so each byte is shown once.
-fn drop_nested(rows: Vec<Row>) -> Vec<Row> {
-    let shown: HashSet<&Path> = rows.iter().map(|r| r.path.as_path()).collect();
-    let keep: Vec<bool> = rows.iter().map(|r| !r.path.parent().is_some_and(|p| shown.contains(p))).collect();
-    rows.into_iter().zip(keep).filter(|(_, k)| *k).map(|(r, _)| r).collect()
+/// Collapse a nested row into its ancestor only when it adds nothing: same
+/// rule, or no rule at all. `~/.codex` and `~/.codex/sessions` both earn a row
+/// — one is the folder you recognise, the other is the thing with a verdict —
+/// but the two hundred day-directories underneath `sessions` do not.
+fn keep_informative(rows: Vec<Row>) -> Vec<Row> {
+    let mut kept: Vec<Row> = Vec::with_capacity(rows.len());
+    for row in rows {
+        // Rows arrive largest-first, so any ancestor has already been decided.
+        let ancestor = kept
+            .iter()
+            .rev()
+            .find(|k| row.path.starts_with(&k.path) && row.path != k.path);
+        let informative = match ancestor {
+            None => true,
+            Some(a) => rule_of(&row).is_some() && rule_of(&row) != rule_of(a),
+        };
+        if informative {
+            kept.push(row);
+        }
+    }
+    kept
+}
+
+fn rule_of(r: &Row) -> Option<&str> {
+    r.verdict.as_ref().map(|v| v.rule_id.as_str())
 }
 
 fn dir_row(rules: &Rules, path: PathBuf, size: u64, files: u64) -> Row {
@@ -115,15 +141,29 @@ fn file_row(rules: &Rules, path: &Path, size: u64) -> Row {
 }
 
 fn basename(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string())
 }
 
 /// Bytes the rules say are safely reclaimable (trash or archive) in these rows.
+/// Rows nested inside another counted row are skipped, so the total is a real
+/// number rather than the same gigabytes added twice.
 pub fn reclaimable(rows: &[Row]) -> u64 {
-    rows.iter()
-        .filter(|r| r.verdict.as_ref().is_some_and(|v| matches!(v.suggest.as_str(), "trash" | "archive")))
-        .map(|r| r.size)
-        .sum()
+    let mut counted: Vec<&Path> = Vec::new();
+    let mut total = 0;
+    for r in rows {
+        let claimable = r
+            .verdict
+            .as_ref()
+            .is_some_and(|v| matches!(v.suggest.as_str(), "trash" | "archive"));
+        if !claimable || counted.iter().any(|c| r.path.starts_with(c)) {
+            continue;
+        }
+        counted.push(&r.path);
+        total += r.size;
+    }
+    total
 }
 
 #[cfg(test)]
@@ -131,16 +171,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nested_rows_are_collapsed_to_their_top_ancestor() {
+    fn nested_rows_collapse_unless_they_carry_a_new_verdict() {
         let rules = Rules::load_default().unwrap();
-        let mk = |p: &str| dir_row(&rules, PathBuf::from(p), 10, 1);
-        let kept = drop_nested(vec![mk("/a"), mk("/a/b"), mk("/a/b/c"), mk("/z")]);
-        let names: Vec<_> = kept.iter().map(|r| r.path.display().to_string()).collect();
-        assert_eq!(names, vec!["/a", "/z"]);
+        let home = crate::rules::home_dir();
+        let mk = |p: PathBuf, size: u64| dir_row(&rules, p, size, 1);
+
+        // Unclassified chain: only the outermost survives.
+        let kept = keep_informative(vec![
+            mk(PathBuf::from("/a"), 30),
+            mk(PathBuf::from("/a/b"), 20),
+            mk(PathBuf::from("/a/b/c"), 10),
+        ]);
+        assert_eq!(kept.len(), 1);
+
+        // ~/.codex has no rule, ~/.codex/sessions does — both are worth a row,
+        // and the day directories underneath it are not.
+        let kept = keep_informative(vec![
+            mk(home.join(".codex"), 40),
+            mk(home.join(".codex/sessions"), 30),
+            mk(home.join(".codex/sessions/2026/07"), 20),
+            mk(home.join(".codex/plugins"), 10),
+        ]);
+        let names: Vec<String> = kept.iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names, vec![".codex", "sessions", "plugins"]);
+    }
+
+    #[test]
+    fn reclaimable_never_counts_the_same_bytes_twice() {
+        let rules = Rules::load_default().unwrap();
+        let home = crate::rules::home_dir();
+        // plugins is `trash`; a child of it must not add to the total again.
+        let rows = vec![
+            dir_row(&rules, home.join(".codex/plugins"), 1_000, 1),
+            dir_row(&rules, home.join(".codex/plugins/inner"), 400, 1),
+        ];
+        assert_eq!(reclaimable(&rows), 1_000);
     }
 }
 
 /// Rows for an explicit list of files (used by the live directory listing).
 pub fn file_rows(rules: &Rules, files: &[crate::scan::FileEntry]) -> Vec<Row> {
-    files.iter().map(|f| file_row(rules, &f.path, f.size)).collect()
+    files
+        .iter()
+        .map(|f| file_row(rules, &f.path, f.size))
+        .collect()
 }

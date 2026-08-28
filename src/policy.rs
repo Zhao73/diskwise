@@ -88,11 +88,18 @@ pub enum Denial {
 impl std::fmt::Display for Denial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Denial::Protected(p) => write!(f, "{p} is protected and can never be modified by diskwise"),
-            Denial::NeedsConfirmation => write!(f, "needs confirmation: run `diskwise confirm <plan-id>`"),
+            Denial::Protected(p) => {
+                write!(f, "{p} is protected and can never be modified by diskwise")
+            }
+            Denial::NeedsConfirmation => {
+                write!(f, "needs confirmation: run `diskwise confirm <plan-id>`")
+            }
             Denial::ReadOnly => write!(f, "policy is set to readonly; nothing will be modified"),
             Denial::TooBig { limit_gb } => {
-                write!(f, "over the unattended ceiling of {limit_gb} GB; needs confirmation")
+                write!(
+                    f,
+                    "over the unattended ceiling of {limit_gb} GB; needs confirmation"
+                )
             }
         }
     }
@@ -114,7 +121,11 @@ impl Guard {
     pub fn new(policy: Policy) -> Result<Self> {
         let home = home_dir();
         let mut forbidden = GlobSetBuilder::new();
-        for pat in FORBIDDEN.iter().map(|s| s.to_string()).chain(policy.never.iter().cloned()) {
+        for pat in FORBIDDEN
+            .iter()
+            .map(|s| s.to_string())
+            .chain(policy.never.iter().cloned())
+        {
             let e = expand_home(&pat, &home);
             forbidden.add(Glob::new(&e)?);
             // `~/.ssh/**` should also protect `~/.ssh` itself.
@@ -130,7 +141,11 @@ impl Guard {
                 allow.add(Glob::new(&format!("{e}/**"))?);
             }
         }
-        Ok(Guard { policy, forbidden: forbidden.build()?, auto_allow: allow.build()? })
+        Ok(Guard {
+            policy,
+            forbidden: forbidden.build()?,
+            auto_allow: allow.build()?,
+        })
     }
 
     /// True if this path may never be touched. Checked on every ancestor too,
@@ -163,7 +178,9 @@ impl Guard {
         }
         let limit = (self.policy.max_auto_delete_gb * 1e9) as u64;
         if bytes > limit {
-            return Err(Denial::TooBig { limit_gb: self.policy.max_auto_delete_gb });
+            return Err(Denial::TooBig {
+                limit_gb: self.policy.max_auto_delete_gb,
+            });
         }
         if !paths.iter().all(|p| self.auto_allow.is_match(p)) {
             return Err(Denial::NeedsConfirmation);
@@ -208,13 +225,16 @@ mod tests {
         let home = home_dir();
         let target = home.join("App/x/node_modules");
 
-        let ro = guard(Policy { default: Mode::Readonly, ..Default::default() });
+        let ro = guard(Policy {
+            default: Mode::Readonly,
+            ..Default::default()
+        });
         assert_eq!(ro.check(&target), Err(Denial::ReadOnly));
 
         let dflt = guard(Policy::default());
         assert!(dflt.check(&target).is_ok(), "confirmed actions are allowed");
         assert_eq!(
-            dflt.check_unattended(&[target.clone()], 1),
+            dflt.check_unattended(std::slice::from_ref(&target), 1),
             Err(Denial::NeedsConfirmation),
             "default policy must never act unattended"
         );
@@ -232,8 +252,13 @@ mod tests {
         let allowed = home.join("App/x/node_modules");
         let elsewhere = home.join("Documents/taxes");
 
-        assert!(g.check_unattended(&[allowed.clone()], 1_000_000).is_ok());
-        assert_eq!(g.check_unattended(&[elsewhere], 1_000), Err(Denial::NeedsConfirmation));
+        assert!(g
+            .check_unattended(std::slice::from_ref(&allowed), 1_000_000)
+            .is_ok());
+        assert_eq!(
+            g.check_unattended(&[elsewhere], 1_000),
+            Err(Denial::NeedsConfirmation)
+        );
         assert_eq!(
             g.check_unattended(&[allowed], 6_000_000_000),
             Err(Denial::TooBig { limit_gb: 5.0 })

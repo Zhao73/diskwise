@@ -1,0 +1,24 @@
+# Copy to ~/.diskwise/policy.toml to change what may happen without you.
+# Without this file, diskwise behaves as if it contained exactly the below.
+
+# readonly | confirm | auto
+#   readonly - analysis only; nothing is ever modified
+#   confirm  - plans are built freely, applying one needs `diskwise confirm <id>`
+#   auto     - apply without asking, but only inside auto_allow and under the ceiling
+default = "confirm"
+
+# Only consulted in `auto` mode. Everything outside this list still needs you.
+auto_allow = [
+  # "~/Library/Caches/**",
+  # "**/node_modules",
+  # "**/target/debug",
+]
+
+# Extra paths to protect, on top of the built-in list (~/.ssh, Keychains,
+# iCloud Drive, .git, /System, …) which no configuration can switch off.
+never = [
+  # "~/Documents/**",
+]
+
+# Ceiling on a single unattended run, in gigabytes.
+max_auto_delete_gb = 5.0

@@ -52,11 +52,12 @@ pub fn save_cache(s: &Scan) {
 #[tokio::main]
 pub async fn serve(root: PathBuf, port: u16, open_browser: bool) -> Result<()> {
     let root = root.canonicalize().unwrap_or(root);
-    let cached = load_cache(&root);
-    let have_cache = cached.is_some();
-    let initial = match cached {
+    let initial = match load_cache(&root) {
         Some(s) => {
-            eprintln!("Loaded cached index for {} — rescanning in the background.", root.display());
+            eprintln!(
+                "Loaded cached index for {} — rescanning in the background.",
+                root.display()
+            );
             s
         }
         None => {
@@ -73,9 +74,7 @@ pub async fn serve(root: PathBuf, port: u16, open_browser: bool) -> Result<()> {
         scanning: AtomicBool::new(false),
     });
 
-    if have_cache {
-        spawn_rescan(Arc::clone(&app), root.clone());
-    }
+    spawn_rescan(Arc::clone(&app), root.clone());
 
     let router = Router::new()
         .route("/", get(|| async { Html(INDEX_HTML) }))
@@ -198,7 +197,9 @@ async fn listdir(
 }
 
 async fn processes() -> Result<Json<Vec<procs::Proc>>, (StatusCode, String)> {
-    procs::list().map(Json).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    procs::list()
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -209,7 +210,9 @@ struct KillParams {
 }
 
 async fn kill_proc(AxQuery(p): AxQuery<KillParams>) -> Result<StatusCode, (StatusCode, String)> {
-    procs::kill(p.pid, p.force).map(|_| StatusCode::OK).map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))
+    procs::kill(p.pid, p.force)
+        .map(|_| StatusCode::OK)
+        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))
 }
 
 async fn rescan(State(app): State<Shared>) -> impl IntoResponse {

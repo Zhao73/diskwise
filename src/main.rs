@@ -15,7 +15,11 @@ use clap::{Parser, Subcommand};
 use humansize::{format_size, DECIMAL};
 
 #[derive(Parser)]
-#[command(name = "diskwise", version, about = "See where your disk went — and what an agent left behind")]
+#[command(
+    name = "diskwise",
+    version,
+    about = "See where your disk went — and what an agent left behind"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -89,13 +93,9 @@ enum Cmd {
         archives: bool,
     },
     /// Execute a plan produced by `clean`.
-    Confirm {
-        plan_id: String,
-    },
+    Confirm { plan_id: String },
     /// Archive one directory to ~/.diskwise/archives and trash the original.
-    Archive {
-        path: PathBuf,
-    },
+    Archive { path: PathBuf },
     /// Restore an archive. Without --to it goes back where it came from.
     Restore {
         archive: PathBuf,
@@ -121,12 +121,36 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Scan { path, top, files, shallow, category, contains, min, json } => {
+        Cmd::Scan {
+            path,
+            top,
+            files,
+            shallow,
+            category,
+            contains,
+            min,
+            json,
+        } => {
             let root = path.unwrap_or_else(rules::home_dir);
             let min = parse_size(&min)?;
-            cmd_scan(root, top, files, shallow, category, contains, min, json)
+            cmd_scan(ScanArgs {
+                root,
+                top,
+                files,
+                shallow,
+                category,
+                contains,
+                min,
+                json,
+            })
         }
-        Cmd::Clean { path, target, category, min, archives } => {
+        Cmd::Clean {
+            path,
+            target,
+            category,
+            min,
+            archives,
+        } => {
             let root = path.unwrap_or_else(rules::home_dir);
             let opts = plan::PlanOptions {
                 target: target.map(|t| parse_size(&t)).transpose()?.unwrap_or(0),
@@ -136,10 +160,19 @@ fn main() -> Result<()> {
             };
             cmd_clean(root, opts)
         }
-        Cmd::Ps { top, days, mine, by_mem, json } => cmd_ps(top, days, mine, by_mem, json),
+        Cmd::Ps {
+            top,
+            days,
+            mine,
+            by_mem,
+            json,
+        } => cmd_ps(top, days, mine, by_mem, json),
         Cmd::Kill { pid, force } => {
             procs::kill(pid, force)?;
-            println!("Sent {} to {pid}.", if force { "SIGKILL" } else { "SIGTERM" });
+            println!(
+                "Sent {} to {pid}.",
+                if force { "SIGKILL" } else { "SIGTERM" }
+            );
             Ok(())
         }
         Cmd::Confirm { plan_id } => cmd_confirm(&plan_id),
@@ -171,14 +204,18 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Mcp => mcp::serve(),
-        Cmd::Ui { path, port, no_open } => {
+        Cmd::Ui {
+            path,
+            port,
+            no_open,
+        } => {
             let root = path.unwrap_or_else(rules::home_dir);
             server::serve(root, port, !no_open)
         }
     }
 }
 
-fn cmd_scan(
+struct ScanArgs {
     root: PathBuf,
     top: usize,
     files: bool,
@@ -187,7 +224,19 @@ fn cmd_scan(
     contains: Option<String>,
     min: u64,
     json: bool,
-) -> Result<()> {
+}
+
+fn cmd_scan(a: ScanArgs) -> Result<()> {
+    let ScanArgs {
+        root,
+        top,
+        files,
+        shallow,
+        category,
+        contains,
+        min,
+        json,
+    } = a;
     let rules = rules::Rules::load_default()?;
     let started = std::time::Instant::now();
     let s = scan::scan(&root);
@@ -216,7 +265,10 @@ fn cmd_scan(
         s.scanned_files,
         elapsed.as_secs_f32(),
         if s.denied > 0 {
-            format!("  ({} paths unreadable — grant Full Disk Access to see them)", s.denied)
+            format!(
+                "  ({} paths unreadable — grant Full Disk Access to see them)",
+                s.denied
+            )
         } else {
             String::new()
         }
@@ -231,7 +283,10 @@ fn cmd_scan(
     }
     let reclaimable = view::reclaimable(&rows);
     if reclaimable > 0 {
-        println!("\nReclaimable in the rows above: {}", format_size(reclaimable, DECIMAL));
+        println!(
+            "\nReclaimable in the rows above: {}",
+            format_size(reclaimable, DECIMAL)
+        );
     }
     Ok(())
 }
@@ -254,7 +309,10 @@ fn cmd_ps(top: usize, days: Option<f64>, mine: bool, by_mem: bool, json: bool) -
         println!("{}", serde_json::to_string_pretty(&list)?);
         return Ok(());
     }
-    println!("{:>7}  {:>6}  {:>9}  {:>9}  {}", "PID", "CPU%", "MEM", "UPTIME", "PROCESS");
+    println!(
+        "{:>7}  {:>6}  {:>9}  {:>9}  PROCESS",
+        "PID", "CPU%", "MEM", "UPTIME"
+    );
     for p in &list {
         println!(
             "{:>7}  {:>6.1}  {:>9}  {:>9}  {}{}",
@@ -281,10 +339,19 @@ fn cmd_clean(root: PathBuf, opts: plan::PlanOptions) -> Result<()> {
         return Ok(());
     }
     for item in &plan.items {
-        println!("{:>10}  {:<8}  {}", format_size(item.size, DECIMAL), format!("{:?}", item.action).to_lowercase(), item.path.display());
+        println!(
+            "{:>10}  {:<8}  {}",
+            format_size(item.size, DECIMAL),
+            format!("{:?}", item.action).to_lowercase(),
+            item.path.display()
+        );
         println!("            {}", item.reason);
     }
-    println!("\nWould free {} across {} paths.", format_size(plan.total(), DECIMAL), plan.items.len());
+    println!(
+        "\nWould free {} across {} paths.",
+        format_size(plan.total(), DECIMAL),
+        plan.items.len()
+    );
     println!("Deletions go to the Trash; archives are verified before the original is released.");
 
     match guard.check_unattended(&plan.paths(), plan.total()) {
@@ -305,7 +372,12 @@ fn cmd_clean(root: PathBuf, opts: plan::PlanOptions) -> Result<()> {
 fn cmd_confirm(plan_id: &str) -> Result<()> {
     let plan = actions::Plan::load(plan_id)?;
     let guard = policy::Guard::load()?;
-    println!("Applying plan {} ({} paths, {}) …", plan.id, plan.items.len(), format_size(plan.total(), DECIMAL));
+    println!(
+        "Applying plan {} ({} paths, {}) …",
+        plan.id,
+        plan.items.len(),
+        format_size(plan.total(), DECIMAL)
+    );
     report(actions::apply(&plan, &guard));
     Ok(())
 }
@@ -317,7 +389,11 @@ fn report(outcomes: Vec<actions::Outcome>) {
             Some(e) => println!("  FAILED  {}  — {e}", o.path.display()),
             None => {
                 freed += o.freed;
-                let where_to = o.archive.as_ref().map(|a| format!(" -> {}", a.display())).unwrap_or_default();
+                let where_to = o
+                    .archive
+                    .as_ref()
+                    .map(|a| format!(" -> {}", a.display()))
+                    .unwrap_or_default();
                 println!("  ok      {}{where_to}", o.path.display());
             }
         }

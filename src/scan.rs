@@ -82,7 +82,10 @@ pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
             busy_timeout: std::time::Duration::from_secs(1),
         })
         .process_read_dir(move |_depth, path, _state, children| {
-            let mut work = DirWork { path: path.to_path_buf(), ..Default::default() };
+            let mut work = DirWork {
+                path: path.to_path_buf(),
+                ..Default::default()
+            };
             for child in children.iter_mut() {
                 let child = match child {
                     Ok(c) => c,
@@ -167,7 +170,13 @@ pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
     }
     big_files.sort_by(|a, b| b.size.cmp(&a.size));
 
-    Scan { root, dirs, big_files, denied, scanned_files }
+    Scan {
+        root,
+        dirs,
+        big_files,
+        denied,
+        scanned_files,
+    }
 }
 
 /// Every file directly inside `dir`, largest first. Read live, so it also works
@@ -180,13 +189,25 @@ pub fn list_files(dir: &Path) -> std::io::Result<Vec<FileEntry>> {
             Ok(m) if m.is_file() => m,
             _ => continue,
         };
-        out.push(FileEntry { path: entry.path(), size: disk_bytes(&md), mtime: md.mtime() });
+        out.push(FileEntry {
+            path: entry.path(),
+            size: disk_bytes(&md),
+            mtime: md.mtime(),
+        });
     }
     out.sort_by(|a, b| b.size.cmp(&a.size));
     Ok(out)
 }
 
 impl Scan {
+    /// A placeholder for a root that has not been scanned yet.
+    pub fn empty(root: PathBuf) -> Scan {
+        Scan {
+            root,
+            ..Default::default()
+        }
+    }
+
     pub fn total(&self) -> u64 {
         self.dirs.get(&self.root).map(|d| d.total).unwrap_or(0)
     }
@@ -228,7 +249,10 @@ mod tests {
         // Same bytes visible at every level of the chain.
         assert!(s.total() >= 2_000_000);
         assert_eq!(s.dirs[&root].total, s.dirs[&root.join("a/b/c")].total);
-        assert_eq!(s.dirs[&root.join("a/b/c")].own, s.dirs[&root.join("a/b/c")].total);
+        assert_eq!(
+            s.dirs[&root.join("a/b/c")].own,
+            s.dirs[&root.join("a/b/c")].total
+        );
         assert_eq!(s.dirs[&root.join("a")].own, 0);
         assert_eq!(s.big_files.len(), 1);
         assert_eq!(s.big_files[0].path, root.join("a/b/c/f.bin"));
