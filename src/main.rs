@@ -1,4 +1,5 @@
 mod actions;
+mod mcp;
 mod plan;
 mod policy;
 mod procs;
@@ -103,6 +104,8 @@ enum Cmd {
     },
     /// List archives diskwise has made.
     Archives,
+    /// Run as an MCP server on stdio, for Claude Code / Codex.
+    Mcp,
     /// Open the visual browser in a local web page.
     Ui {
         /// Directory to scan (default: your home directory).
@@ -167,6 +170,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Mcp => mcp::serve(),
         Cmd::Ui { path, port, no_open } => {
             let root = path.unwrap_or_else(rules::home_dir);
             server::serve(root, port, !no_open)
