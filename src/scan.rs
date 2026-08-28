@@ -36,6 +36,9 @@ pub struct DirEntry {
     /// Bytes of files sitting directly in this directory.
     pub own: u64,
     pub files: u64,
+    /// Newest mtime anywhere in this subtree, seconds since the epoch. Used to
+    /// honour retention windows so live data is never archived out from under you.
+    pub newest: i64,
 }
 
 /// Bytes actually allocated on disk. `st_blocks` is always 512-byte units per
@@ -57,6 +60,7 @@ struct DirWork {
     path: PathBuf,
     own: u64,
     files: u64,
+    newest: i64,
     bigs: Vec<FileEntry>,
     /// (dev, ino, bytes) for files with more than one link, so the roll-up can
     /// subtract the duplicates instead of counting the same blocks twice.
@@ -100,6 +104,7 @@ pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
                 let bytes = disk_bytes(&md);
                 work.own += bytes;
                 work.files += 1;
+                work.newest = work.newest.max(md.mtime());
                 if md.nlink() > 1 {
                     work.linked.push((md.dev(), md.ino(), bytes));
                 }
@@ -144,10 +149,13 @@ pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
         let e = dirs.entry(w.path.clone()).or_default();
         e.own += own;
         e.files += w.files;
+        e.newest = e.newest.max(w.newest);
         // Roll the bytes up through every ancestor, stopping at the scan root.
         let mut cur: Option<&Path> = Some(w.path.as_path());
         while let Some(p) = cur {
-            dirs.entry(p.to_path_buf()).or_default().total += own;
+            let anc = dirs.entry(p.to_path_buf()).or_default();
+            anc.total += own;
+            anc.newest = anc.newest.max(w.newest);
             if p == root {
                 break;
             }

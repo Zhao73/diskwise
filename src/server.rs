@@ -166,6 +166,7 @@ async fn rows(State(app): State<Shared>, AxQuery(p): AxQuery<RowsParams>) -> Jso
         category: p.category.filter(|c| !c.is_empty()),
         contains: p.contains.filter(|c| !c.is_empty()),
         limit: p.limit,
+        keep_nested: false,
     };
     let rows = view::rows(&s, &app.rules, &q);
     Json(RowsResponse {

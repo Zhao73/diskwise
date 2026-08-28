@@ -34,6 +34,9 @@ pub struct Query {
     pub category: Option<String>,
     /// Substring match on the path.
     pub contains: Option<String>,
+    /// Keep directories whose parent is also listed. Display collapses them so
+    /// each byte is shown once; planning needs them all.
+    pub keep_nested: bool,
     pub limit: usize,
 }
 
@@ -69,7 +72,7 @@ pub fn rows(s: &Scan, rules: &Rules, q: &Query) -> Vec<Row> {
         let needle = needle.to_lowercase();
         out.retain(|r| r.path.to_string_lossy().to_lowercase().contains(&needle));
     }
-    if q.dir.is_none() && !q.files_only {
+    if q.dir.is_none() && !q.files_only && !q.keep_nested {
         // Without this a deep tree prints the same bytes at every level.
         out = drop_nested(out);
     }

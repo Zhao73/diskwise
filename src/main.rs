@@ -1,3 +1,6 @@
+mod actions;
+mod plan;
+mod policy;
 mod rules;
 mod scan;
 mod server;
@@ -44,6 +47,39 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Build a cleanup plan. Nothing is touched until you confirm it.
+    Clean {
+        /// Directory to consider (default: your home directory).
+        path: Option<PathBuf>,
+        /// Stop once this much would be freed, e.g. 50G.
+        #[arg(long)]
+        target: Option<String>,
+        /// Only this category, e.g. build, toolchain-cache, agent-session.
+        #[arg(long)]
+        category: Option<String>,
+        /// Ignore anything smaller than this.
+        #[arg(long, default_value = "100M")]
+        min: String,
+        /// Also archive irreplaceable-but-compressible data (agent sessions).
+        #[arg(long)]
+        archives: bool,
+    },
+    /// Execute a plan produced by `clean`.
+    Confirm {
+        plan_id: String,
+    },
+    /// Archive one directory to ~/.diskwise/archives and trash the original.
+    Archive {
+        path: PathBuf,
+    },
+    /// Restore an archive. Without --to it goes back where it came from.
+    Restore {
+        archive: PathBuf,
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
+    /// List archives diskwise has made.
+    Archives,
     /// Open the visual browser in a local web page.
     Ui {
         /// Directory to scan (default: your home directory).
@@ -63,6 +99,44 @@ fn main() -> Result<()> {
             let root = path.unwrap_or_else(rules::home_dir);
             let min = parse_size(&min)?;
             cmd_scan(root, top, files, shallow, category, contains, min, json)
+        }
+        Cmd::Clean { path, target, category, min, archives } => {
+            let root = path.unwrap_or_else(rules::home_dir);
+            let opts = plan::PlanOptions {
+                target: target.map(|t| parse_size(&t)).transpose()?.unwrap_or(0),
+                category,
+                min: parse_size(&min)?,
+                include_archives: archives,
+            };
+            cmd_clean(root, opts)
+        }
+        Cmd::Confirm { plan_id } => cmd_confirm(&plan_id),
+        Cmd::Archive { path } => {
+            let guard = policy::Guard::load()?;
+            guard.check(&path).map_err(|d| anyhow::anyhow!("{d}"))?;
+            let out = actions::archive(&path)?;
+            println!("Archived to {}", out.display());
+            Ok(())
+        }
+        Cmd::Restore { archive, to } => {
+            let dest = actions::restore(&archive, to.as_deref())?;
+            println!("Restored into {}", dest.display());
+            Ok(())
+        }
+        Cmd::Archives => {
+            for (p, m) in actions::list_archives()? {
+                match m {
+                    Some(m) => println!(
+                        "{:>10}  <- {}  ({} entries, {} original)",
+                        format_size(m.compressed, DECIMAL),
+                        m.source.display(),
+                        m.entries,
+                        format_size(m.uncompressed, DECIMAL)
+                    ),
+                    None => println!("{:>10}  {}", "?", p.display()),
+                }
+            }
+            Ok(())
         }
         Cmd::Ui { path, port, no_open } => {
             let root = path.unwrap_or_else(rules::home_dir);
@@ -93,6 +167,7 @@ fn cmd_scan(
         category,
         contains,
         limit: top,
+        keep_nested: false,
     };
     let rows = view::rows(&s, &rules, &q);
 
@@ -126,6 +201,62 @@ fn cmd_scan(
         println!("\nReclaimable in the rows above: {}", format_size(reclaimable, DECIMAL));
     }
     Ok(())
+}
+
+fn cmd_clean(root: PathBuf, opts: plan::PlanOptions) -> Result<()> {
+    let rules = rules::Rules::load_default()?;
+    let guard = policy::Guard::load()?;
+    eprintln!("Scanning {} …", root.display());
+    let s = scan::scan(&root);
+    let plan = plan::build(&s, &rules, &guard, &opts);
+
+    if plan.items.is_empty() {
+        println!("Nothing eligible. Try --archives, a smaller --min, or a different --category.");
+        return Ok(());
+    }
+    for item in &plan.items {
+        println!("{:>10}  {:<8}  {}", format_size(item.size, DECIMAL), format!("{:?}", item.action).to_lowercase(), item.path.display());
+        println!("            {}", item.reason);
+    }
+    println!("\nWould free {} across {} paths.", format_size(plan.total(), DECIMAL), plan.items.len());
+    println!("Deletions go to the Trash; archives are verified before the original is released.");
+
+    match guard.check_unattended(&plan.paths(), plan.total()) {
+        Ok(()) => {
+            println!("\nPolicy allows this unattended. Applying …");
+            report(actions::apply(&plan, &guard));
+            Ok(())
+        }
+        Err(d) => {
+            plan.save()?;
+            println!("\n{d}");
+            println!("Review it, then run:  diskwise confirm {}", plan.id);
+            Ok(())
+        }
+    }
+}
+
+fn cmd_confirm(plan_id: &str) -> Result<()> {
+    let plan = actions::Plan::load(plan_id)?;
+    let guard = policy::Guard::load()?;
+    println!("Applying plan {} ({} paths, {}) …", plan.id, plan.items.len(), format_size(plan.total(), DECIMAL));
+    report(actions::apply(&plan, &guard));
+    Ok(())
+}
+
+fn report(outcomes: Vec<actions::Outcome>) {
+    let mut freed = 0u64;
+    for o in &outcomes {
+        match &o.error {
+            Some(e) => println!("  FAILED  {}  — {e}", o.path.display()),
+            None => {
+                freed += o.freed;
+                let where_to = o.archive.as_ref().map(|a| format!(" -> {}", a.display())).unwrap_or_default();
+                println!("  ok      {}{where_to}", o.path.display());
+            }
+        }
+    }
+    println!("\nFreed {}.", format_size(freed, DECIMAL));
 }
 
 /// "500M", "2G", "1024" -> bytes.
