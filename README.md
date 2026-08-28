@@ -137,6 +137,14 @@ Beyond that:
 - Sizes come from allocated blocks, not apparent size, so they match `du` on
   APFS where clones and sparse files lie.
 
+## Performance, honestly
+
+A 3-million-file home directory scans in ~35 seconds and peaks around 850 MB
+of RSS while it does, because the walker allocates an entry per file. The
+finished index is about 90 MB of that, and the rest is returned when the scan
+ends. `diskwise ui` serves the page immediately and scans in the background,
+so a cold start is never a blank browser window.
+
 ## Rules
 
 The interesting part of this project is `rules/default.toml` — plain data, no

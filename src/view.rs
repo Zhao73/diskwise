@@ -166,6 +166,14 @@ pub fn reclaimable(rows: &[Row]) -> u64 {
     total
 }
 
+/// Rows for an explicit list of files (used by the live directory listing).
+pub fn file_rows(rules: &Rules, files: &[crate::scan::FileEntry]) -> Vec<Row> {
+    files
+        .iter()
+        .map(|f| file_row(rules, &f.path, f.size))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,12 +215,4 @@ mod tests {
         ];
         assert_eq!(reclaimable(&rows), 1_000);
     }
-}
-
-/// Rows for an explicit list of files (used by the live directory listing).
-pub fn file_rows(rules: &Rules, files: &[crate::scan::FileEntry]) -> Vec<Row> {
-    files
-        .iter()
-        .map(|f| file_row(rules, &f.path, f.size))
-        .collect()
 }

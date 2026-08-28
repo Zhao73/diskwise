@@ -54,27 +54,77 @@ pub fn scan(root: &Path) -> Scan {
     scan_with(root, BIG_FILE_THRESHOLD)
 }
 
-/// One directory's worth of work, produced on a walker thread.
+/// Everything the walker threads accumulate, behind one lock. Aggregating as
+/// we go rather than collecting per-directory results and folding them at the
+/// end keeps peak memory to roughly the size of the finished index.
 #[derive(Default)]
-struct DirWork {
-    path: PathBuf,
-    own: u64,
-    files: u64,
-    newest: i64,
-    bigs: Vec<FileEntry>,
-    /// (dev, ino, bytes) for files with more than one link, so the roll-up can
-    /// subtract the duplicates instead of counting the same blocks twice.
-    linked: Vec<(u64, u64, u64)>,
+struct Agg {
+    dirs: HashMap<PathBuf, DirEntry>,
+    big_files: Vec<FileEntry>,
+    /// Inodes of multiply-linked files, so the same blocks are counted once.
+    seen_links: HashSet<(u64, u64)>,
     denied: usize,
+    scanned_files: u64,
 }
 
+impl Agg {
+    /// Fold one directory's own files in, and roll the bytes up to every
+    /// ancestor as far as the scan root.
+    fn absorb(&mut self, path: PathBuf, own: u64, files: u64, newest: i64, root: &Path) {
+        let e = self.dirs.entry(path.clone()).or_default();
+        e.own += own;
+        e.files += files;
+        e.newest = e.newest.max(newest);
+        self.scanned_files += files;
+
+        let mut cur: Option<&Path> = Some(path.as_path());
+        while let Some(p) = cur {
+            // Look up before inserting: nearly every ancestor already exists,
+            // and `entry()` would allocate an owned key for each of them. Over a
+            // few hundred thousand directories that is millions of throwaway
+            // allocations, and it shows up as both time and peak memory.
+            match self.dirs.get_mut(p) {
+                Some(anc) => {
+                    anc.total += own;
+                    anc.newest = anc.newest.max(newest);
+                }
+                None => {
+                    self.dirs.insert(
+                        p.to_path_buf(),
+                        DirEntry {
+                            total: own,
+                            own: 0,
+                            files: 0,
+                            newest,
+                        },
+                    );
+                }
+            }
+            if p == root {
+                break;
+            }
+            cur = p.parent();
+        }
+    }
+}
+
+// ponytail: jwalk allocates a DirEntry per file, so peak RSS tracks the file
+// count at roughly 280 bytes each — about 850 MB for a 3M-file home directory,
+// released when the scan ends. The finished index is only ~90 MB of that. If
+// that ceiling ever matters, the fix is a hand-rolled readdir loop that stats
+// in place instead of materialising an entry per file.
 pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let collected: Arc<Mutex<Vec<DirWork>>> = Arc::new(Mutex::new(Vec::new()));
+    let agg: Arc<Mutex<Agg>> = Arc::new(Mutex::new(Agg::default()));
+    agg.lock()
+        .unwrap()
+        .dirs
+        .insert(root.clone(), DirEntry::default());
 
     // All the stat() calls happen here, on the walker's thread pool. Doing them
     // in the consuming loop instead pins the whole scan to one core.
-    let sink = Arc::clone(&collected);
+    let sink = Arc::clone(&agg);
+    let scan_root = root.clone();
     let walk = jwalk::WalkDirGeneric::<((), ())>::new(&root)
         .follow_links(false)
         .skip_hidden(false)
@@ -82,15 +132,18 @@ pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
             busy_timeout: std::time::Duration::from_secs(1),
         })
         .process_read_dir(move |_depth, path, _state, children| {
-            let mut work = DirWork {
-                path: path.to_path_buf(),
-                ..Default::default()
-            };
+            let mut own = 0u64;
+            let mut files = 0u64;
+            let mut newest = 0i64;
+            let mut denied = 0usize;
+            let mut bigs: Vec<FileEntry> = Vec::new();
+            let mut linked: Vec<(u64, u64, u64)> = Vec::new();
+
             for child in children.iter_mut() {
                 let child = match child {
                     Ok(c) => c,
                     Err(_) => {
-                        work.denied += 1;
+                        denied += 1;
                         continue;
                     }
                 };
@@ -100,28 +153,39 @@ pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
                 let md = match child.metadata() {
                     Ok(m) => m,
                     Err(_) => {
-                        work.denied += 1;
+                        denied += 1;
                         continue;
                     }
                 };
                 let bytes = disk_bytes(&md);
-                work.own += bytes;
-                work.files += 1;
-                work.newest = work.newest.max(md.mtime());
+                own += bytes;
+                files += 1;
+                newest = newest.max(md.mtime());
                 if md.nlink() > 1 {
-                    work.linked.push((md.dev(), md.ino(), bytes));
+                    linked.push((md.dev(), md.ino(), bytes));
                 }
                 if bytes >= big_file_threshold {
-                    work.bigs.push(FileEntry {
+                    bigs.push(FileEntry {
                         path: path.join(child.file_name()),
                         size: bytes,
                         mtime: md.mtime(),
                     });
                 }
             }
-            // Files are fully accounted for; only directories need to be walked.
+            // Files are fully accounted for; only directories need walking.
             children.retain(|c| c.as_ref().map(|c| c.file_type.is_dir()).unwrap_or(false));
-            sink.lock().unwrap().push(work);
+
+            let mut agg = sink.lock().unwrap();
+            for (dev, ino, bytes) in linked {
+                // ponytail: whichever thread arrives first owns the blocks. Which
+                // directory that is isn't deterministic; the total is.
+                if !agg.seen_links.insert((dev, ino)) {
+                    own = own.saturating_sub(bytes);
+                }
+            }
+            agg.denied += denied;
+            agg.big_files.append(&mut bigs);
+            agg.absorb(path.to_path_buf(), own, files, newest, &scan_root);
         });
 
     // Draining the iterator is what drives the walk.
@@ -132,50 +196,14 @@ pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
         }
     }
 
-    let works = std::mem::take(&mut *collected.lock().unwrap());
-    let mut dirs: HashMap<PathBuf, DirEntry> = HashMap::new();
-    let mut big_files: Vec<FileEntry> = Vec::new();
-    let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
-    let mut scanned_files = 0u64;
-
-    for w in &works {
-        denied += w.denied;
-        scanned_files += w.files;
-        let mut own = w.own;
-        for (dev, ino, bytes) in &w.linked {
-            // ponytail: whichever thread got there first owns the blocks; which
-            // directory that is isn't deterministic, but the total is.
-            if !seen_inodes.insert((*dev, *ino)) {
-                own = own.saturating_sub(*bytes);
-            }
-        }
-        let e = dirs.entry(w.path.clone()).or_default();
-        e.own += own;
-        e.files += w.files;
-        e.newest = e.newest.max(w.newest);
-        // Roll the bytes up through every ancestor, stopping at the scan root.
-        let mut cur: Option<&Path> = Some(w.path.as_path());
-        while let Some(p) = cur {
-            let anc = dirs.entry(p.to_path_buf()).or_default();
-            anc.total += own;
-            anc.newest = anc.newest.max(w.newest);
-            if p == root {
-                break;
-            }
-            cur = p.parent();
-        }
-    }
-    for w in works {
-        big_files.extend(w.bigs);
-    }
-    big_files.sort_by(|a, b| b.size.cmp(&a.size));
-
+    let mut agg = std::mem::take(&mut *agg.lock().unwrap());
+    agg.big_files.sort_by(|a, b| b.size.cmp(&a.size));
     Scan {
         root,
-        dirs,
-        big_files,
-        denied,
-        scanned_files,
+        dirs: agg.dirs,
+        big_files: agg.big_files,
+        denied: denied + agg.denied,
+        scanned_files: agg.scanned_files,
     }
 }
 

@@ -34,8 +34,8 @@ pub fn cache_path() -> PathBuf {
 }
 
 pub fn load_cache(root: &std::path::Path) -> Option<Scan> {
-    let raw = std::fs::read(cache_path()).ok()?;
-    let s: Scan = serde_json::from_slice(&raw).ok()?;
+    let file = std::fs::File::open(cache_path()).ok()?;
+    let s: Scan = serde_json::from_reader(std::io::BufReader::new(file)).ok()?;
     (s.root == root).then_some(s)
 }
 
@@ -44,8 +44,9 @@ pub fn save_cache(s: &Scan) {
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(bytes) = serde_json::to_vec(s) {
-        let _ = std::fs::write(p, bytes);
+    // Streamed, not buffered: this index is tens of megabytes.
+    if let Ok(file) = std::fs::File::create(&p) {
+        let _ = serde_json::to_writer(std::io::BufWriter::new(file), s);
     }
 }
 
@@ -61,10 +62,11 @@ pub async fn serve(root: PathBuf, port: u16, open_browser: bool) -> Result<()> {
             s
         }
         None => {
-            eprintln!("Scanning {} …", root.display());
-            let s = scan::scan(&root);
-            save_cache(&s);
-            s
+            // Serve the page first in every case: a cold scan of a large home
+            // directory takes the better part of a minute, and staring at a
+            // refused connection is not a loading state.
+            eprintln!("Scanning {} in the background …", root.display());
+            Scan::empty(root.clone())
         }
     };
 

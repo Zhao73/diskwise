@@ -129,9 +129,10 @@ fn parse_line(line: &str, me: &str, cmdlines: &HashMap<i32, String>) -> Option<P
     let exe = it.collect::<Vec<_>>().join(" ");
     let command = cmdlines.get(&pid).cloned().unwrap_or_else(|| exe.clone());
     let path = exe.starts_with('/').then(|| PathBuf::from(&exe));
-    let name = path
-        .as_ref()
-        .and_then(|p| p.file_name())
+    // `comm` can be relative (`./target/release/diskwise`) or a bare name; the
+    // basename is the useful label either way.
+    let name = std::path::Path::new(&exe)
+        .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| exe.clone());
 
