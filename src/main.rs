@@ -1,5 +1,7 @@
 mod rules;
 mod scan;
+mod server;
+mod view;
 
 use std::path::PathBuf;
 
@@ -32,6 +34,9 @@ enum Cmd {
         /// Only show entries a rule recognises (e.g. agent-session, build).
         #[arg(long)]
         category: Option<String>,
+        /// Only show paths containing this text.
+        #[arg(long)]
+        contains: Option<String>,
         /// Only show entries this big or bigger, e.g. 500M, 2G.
         #[arg(long, default_value = "10M")]
         min: String,
@@ -39,15 +44,29 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Open the visual browser in a local web page.
+    Ui {
+        /// Directory to scan (default: your home directory).
+        path: Option<PathBuf>,
+        #[arg(long, default_value_t = 7373)]
+        port: u16,
+        /// Don't open a browser window.
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Scan { path, top, files, shallow, category, min, json } => {
+        Cmd::Scan { path, top, files, shallow, category, contains, min, json } => {
             let root = path.unwrap_or_else(rules::home_dir);
             let min = parse_size(&min)?;
-            cmd_scan(root, top, files, shallow, category, min, json)
+            cmd_scan(root, top, files, shallow, category, contains, min, json)
+        }
+        Cmd::Ui { path, port, no_open } => {
+            let root = path.unwrap_or_else(rules::home_dir);
+            server::serve(root, port, !no_open)
         }
     }
 }
@@ -58,6 +77,7 @@ fn cmd_scan(
     files: bool,
     shallow: bool,
     category: Option<String>,
+    contains: Option<String>,
     min: u64,
     json: bool,
 ) -> Result<()> {
@@ -66,62 +86,15 @@ fn cmd_scan(
     let s = scan::scan(&root);
     let elapsed = started.elapsed();
 
-    #[derive(serde::Serialize)]
-    struct Row {
-        path: PathBuf,
-        size: u64,
-        human: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        verdict: Option<rules::Verdict>,
-    }
-
-    let mut rows: Vec<Row> = if files {
-        s.big_files
-            .iter()
-            .map(|f| Row {
-                verdict: rules.classify(&f.path),
-                path: f.path.clone(),
-                size: f.size,
-                human: format_size(f.size, DECIMAL),
-            })
-            .collect()
-    } else {
-        let listed = if shallow { s.children(&s.root) } else { s.ranked() };
-        let mut rows: Vec<Row> = listed
-            .into_iter()
-            .filter(|(p, _)| shallow || p != &s.root)
-            .map(|(p, e)| Row {
-                verdict: rules.classify(&p),
-                path: p,
-                size: e.total,
-                human: format_size(e.total, DECIMAL),
-            })
-            .collect();
-        if shallow {
-            // A directory listing mixes folders and the loose files sitting
-            // beside them — a 600MB sqlite file matters as much as a folder.
-            rows.extend(s.big_files.iter().filter(|f| f.path.parent() == Some(&s.root)).map(|f| Row {
-                verdict: rules.classify(&f.path),
-                path: f.path.clone(),
-                size: f.size,
-                human: format_size(f.size, DECIMAL),
-            }));
-            rows.sort_by(|a, b| b.size.cmp(&a.size));
-        }
-        rows
+    let q = view::Query {
+        dir: shallow.then(|| s.root.clone()),
+        files_only: files,
+        min,
+        category,
+        contains,
+        limit: top,
     };
-
-    rows.retain(|r| r.size >= min);
-    if let Some(cat) = &category {
-        rows.retain(|r| r.verdict.as_ref().is_some_and(|v| &v.category == cat));
-    }
-    if !files && !shallow {
-        // Drop directories whose parent is already in the list — otherwise a
-        // deep tree prints the same bytes a dozen times.
-        let shown: std::collections::HashSet<PathBuf> = rows.iter().map(|r| r.path.clone()).collect();
-        rows.retain(|r| !r.path.parent().is_some_and(|p| shown.contains(p)));
-    }
-    rows.truncate(top);
+    let rows = view::rows(&s, &rules, &q);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -141,17 +114,14 @@ fn cmd_scan(
         }
     );
     println!();
-    let mut reclaimable = 0u64;
     for r in &rows {
-        let (tag, note) = match &r.verdict {
-            Some(v) => (format!("{:<14}", v.category), v.suggest.clone()),
-            None => (format!("{:<14}", "-"), "-".into()),
+        let (cat, sug) = match &r.verdict {
+            Some(v) => (v.category.as_str(), v.suggest.as_str()),
+            None => ("-", "-"),
         };
-        if matches!(note.as_str(), "trash" | "archive") {
-            reclaimable += r.size;
-        }
-        println!("{:>10}  {tag}  {:<8}  {}", r.human, note, r.path.display());
+        println!("{:>10}  {cat:<15} {sug:<8}  {}", r.human, r.path.display());
     }
+    let reclaimable = view::reclaimable(&rows);
     if reclaimable > 0 {
         println!("\nReclaimable in the rows above: {}", format_size(reclaimable, DECIMAL));
     }
