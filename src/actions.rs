@@ -320,7 +320,7 @@ fn slug(p: &Path) -> String {
         .filter(|s| !s.is_empty())
         .collect();
     let tail = parts[parts.len().saturating_sub(5)..].join("-");
-    tail.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '-' }).collect()
+    tail.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' || c == '_' { c } else { '-' }).collect()
 }
 
 #[cfg(test)]

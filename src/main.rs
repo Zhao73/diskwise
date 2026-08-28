@@ -1,6 +1,7 @@
 mod actions;
 mod plan;
 mod policy;
+mod procs;
 mod rules;
 mod scan;
 mod server;
@@ -46,6 +47,28 @@ enum Cmd {
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
+    },
+    /// What is running, what it costs, and how long it has been going.
+    Ps {
+        #[arg(long, default_value_t = 25)]
+        top: usize,
+        /// Only processes running longer than this many days.
+        #[arg(long)]
+        days: Option<f64>,
+        /// Only your own processes.
+        #[arg(long)]
+        mine: bool,
+        /// Sort by resident memory instead of CPU.
+        #[arg(long)]
+        by_mem: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a process (SIGTERM; --force sends SIGKILL).
+    Kill {
+        pid: i32,
+        #[arg(long)]
+        force: bool,
     },
     /// Build a cleanup plan. Nothing is touched until you confirm it.
     Clean {
@@ -109,6 +132,12 @@ fn main() -> Result<()> {
                 include_archives: archives,
             };
             cmd_clean(root, opts)
+        }
+        Cmd::Ps { top, days, mine, by_mem, json } => cmd_ps(top, days, mine, by_mem, json),
+        Cmd::Kill { pid, force } => {
+            procs::kill(pid, force)?;
+            println!("Sent {} to {pid}.", if force { "SIGKILL" } else { "SIGTERM" });
+            Ok(())
         }
         Cmd::Confirm { plan_id } => cmd_confirm(&plan_id),
         Cmd::Archive { path } => {
@@ -199,6 +228,39 @@ fn cmd_scan(
     let reclaimable = view::reclaimable(&rows);
     if reclaimable > 0 {
         println!("\nReclaimable in the rows above: {}", format_size(reclaimable, DECIMAL));
+    }
+    Ok(())
+}
+
+fn cmd_ps(top: usize, days: Option<f64>, mine: bool, by_mem: bool, json: bool) -> Result<()> {
+    let me = std::env::var("USER").unwrap_or_default();
+    let mut list = procs::list()?;
+    if let Some(d) = days {
+        list.retain(|p| p.uptime as f64 >= d * 86_400.0);
+    }
+    if mine {
+        list.retain(|p| p.user == me);
+    }
+    if by_mem {
+        list.sort_by(|a, b| b.rss.cmp(&a.rss));
+    }
+    list.truncate(top);
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&list)?);
+        return Ok(());
+    }
+    println!("{:>7}  {:>6}  {:>9}  {:>9}  {}", "PID", "CPU%", "MEM", "UPTIME", "PROCESS");
+    for p in &list {
+        println!(
+            "{:>7}  {:>6.1}  {:>9}  {:>9}  {}{}",
+            p.pid,
+            p.cpu,
+            format_size(p.rss, DECIMAL),
+            p.uptime_human,
+            p.name,
+            if p.protected { "  (protected)" } else { "" }
+        );
     }
     Ok(())
 }

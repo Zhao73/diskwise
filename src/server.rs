@@ -14,6 +14,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::procs;
 use crate::rules::Rules;
 use crate::scan::{self, Scan};
 use crate::view;
@@ -82,6 +83,8 @@ pub async fn serve(root: PathBuf, port: u16, open_browser: bool) -> Result<()> {
         .route("/api/rows", get(rows))
         .route("/api/listdir", get(listdir))
         .route("/api/rescan", post(rescan))
+        .route("/api/procs", get(processes))
+        .route("/api/kill", post(kill_proc))
         .with_state(app);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -115,6 +118,8 @@ struct Status {
     denied: usize,
     scanning: bool,
     categories: Vec<String>,
+    /// Who the UI is running as, so it can filter to "only mine".
+    user: String,
 }
 
 async fn status(State(app): State<Shared>) -> Json<Status> {
@@ -129,6 +134,7 @@ async fn status(State(app): State<Shared>) -> Json<Status> {
         denied: s.denied,
         scanning: app.scanning.load(Ordering::SeqCst),
         categories,
+        user: procs::whoami(),
     })
 }
 
@@ -189,6 +195,21 @@ async fn listdir(
     let dir = PathBuf::from(&p.path);
     let files = scan::list_files(&dir).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(view::file_rows(&app.rules, &files)))
+}
+
+async fn processes() -> Result<Json<Vec<procs::Proc>>, (StatusCode, String)> {
+    procs::list().map(Json).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct KillParams {
+    pid: i32,
+    #[serde(default)]
+    force: bool,
+}
+
+async fn kill_proc(AxQuery(p): AxQuery<KillParams>) -> Result<StatusCode, (StatusCode, String)> {
+    procs::kill(p.pid, p.force).map(|_| StatusCode::OK).map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))
 }
 
 async fn rescan(State(app): State<Shared>) -> impl IntoResponse {
