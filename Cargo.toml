@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "macOS disk visualizer that knows what your AI agent folders are, and can safely archive or trash them"
 license = "MIT"
-repository = "https://github.com/zjp73/diskwise"
+repository = "https://github.com/Zhao73/diskwise"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

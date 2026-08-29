@@ -28,7 +28,7 @@ anonymous folders. The point of diskwise is the layer that names them.
 ## Install
 
 ```sh
-cargo install --git https://github.com/YOU/diskwise
+cargo install --git https://github.com/Zhao73/diskwise
 ```
 
 Or grab a binary from [Releases](../../releases) — `aarch64` and `x86_64`.
