@@ -19,6 +19,10 @@ pub struct Row {
     pub is_dir: bool,
     /// Recursive file count, for directories.
     pub files: u64,
+    /// Newest mtime in this subtree, seconds since the epoch. Shown for entries
+    /// no rule recognises: "1,204 files, last written in March" is at least a
+    /// fact, where a guess about what the folder is for would not be.
+    pub newest: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
 }
@@ -43,7 +47,7 @@ pub fn rows(s: &Scan, rules: &Rules, q: &Query) -> Vec<Row> {
     let mut out: Vec<Row> = if q.files_only {
         s.big_files
             .iter()
-            .map(|f| file_row(rules, &f.path, f.size))
+            .map(|f| file_row(rules, &f.path, f.size, f.mtime))
             .collect()
     } else if let Some(dir) = &q.dir {
         // A directory listing mixes folders with the loose files beside them —
@@ -51,20 +55,20 @@ pub fn rows(s: &Scan, rules: &Rules, q: &Query) -> Vec<Row> {
         let mut rows: Vec<Row> = s
             .children(dir)
             .into_iter()
-            .map(|(p, e)| dir_row(rules, p, e.total, e.files))
+            .map(|(p, e)| dir_row(rules, p, e.total, e.files, e.newest))
             .collect();
         rows.extend(
             s.big_files
                 .iter()
                 .filter(|f| f.path.parent() == Some(dir.as_path()))
-                .map(|f| file_row(rules, &f.path, f.size)),
+                .map(|f| file_row(rules, &f.path, f.size, f.mtime)),
         );
         rows
     } else {
         s.ranked()
             .into_iter()
             .filter(|(p, _)| p != &s.root)
-            .map(|(p, e)| dir_row(rules, p, e.total, e.files))
+            .map(|(p, e)| dir_row(rules, p, e.total, e.files, e.newest))
             .collect()
     };
 
@@ -128,7 +132,7 @@ fn rule_of(r: &Row) -> Option<&str> {
     r.verdict.as_ref().map(|v| v.rule_id.as_str())
 }
 
-fn dir_row(rules: &Rules, path: PathBuf, size: u64, files: u64) -> Row {
+fn dir_row(rules: &Rules, path: PathBuf, size: u64, files: u64, newest: i64) -> Row {
     Row {
         name: basename(&path),
         verdict: rules.classify(&path),
@@ -137,10 +141,11 @@ fn dir_row(rules: &Rules, path: PathBuf, size: u64, files: u64) -> Row {
         size,
         is_dir: true,
         files,
+        newest,
     }
 }
 
-fn file_row(rules: &Rules, path: &Path, size: u64) -> Row {
+fn file_row(rules: &Rules, path: &Path, size: u64, mtime: i64) -> Row {
     Row {
         name: basename(path),
         verdict: rules.classify(path),
@@ -149,6 +154,7 @@ fn file_row(rules: &Rules, path: &Path, size: u64) -> Row {
         size,
         is_dir: false,
         files: 1,
+        newest: mtime,
     }
 }
 
@@ -178,11 +184,41 @@ pub fn reclaimable(rows: &[Row]) -> u64 {
     total
 }
 
+/// A compact, rule-annotated digest of a scan — small enough to be cheap to
+/// send to an agent, specific enough to answer questions about.
+pub fn digest(s: &Scan, rules: &Rules) -> String {
+    let rows = rows(
+        s,
+        rules,
+        &Query {
+            min: 100 << 20,
+            limit: 40,
+            ..Default::default()
+        },
+    );
+    let mut out = format!(
+        "root: {}\ntotal: {}\nfiles: {}\nreclaimable by rule: {}\n\n",
+        s.root.display(),
+        format_size(s.total(), DECIMAL),
+        s.scanned_files,
+        format_size(reclaimable(&rows), DECIMAL)
+    );
+    for r in &rows {
+        let v = r
+            .verdict
+            .as_ref()
+            .map(|v| format!("{} / {} — {}", v.category, v.suggest, v.note))
+            .unwrap_or_else(|| "no rule (probably your own data)".into());
+        out.push_str(&format!("{:>10}  {}  [{}]\n", r.human, r.path.display(), v));
+    }
+    out
+}
+
 /// Rows for an explicit list of files (used by the live directory listing).
 pub fn file_rows(rules: &Rules, files: &[crate::scan::FileEntry]) -> Vec<Row> {
     files
         .iter()
-        .map(|f| file_row(rules, &f.path, f.size))
+        .map(|f| file_row(rules, &f.path, f.size, f.mtime))
         .collect()
 }
 
@@ -194,7 +230,7 @@ mod tests {
     fn nested_rows_collapse_unless_they_carry_a_new_verdict() {
         let rules = Rules::load_default().unwrap();
         let home = crate::rules::home_dir();
-        let mk = |p: PathBuf, size: u64| dir_row(&rules, p, size, 1);
+        let mk = |p: PathBuf, size: u64| dir_row(&rules, p, size, 1, 0);
 
         // Unclassified chain: only the outermost survives.
         let kept = keep_informative(vec![
@@ -221,8 +257,8 @@ mod tests {
     fn equal_sized_parent_and_child_collapse_to_the_parent() {
         let rules = Rules::load_default().unwrap();
         let mut rows = vec![
-            dir_row(&rules, PathBuf::from("/a/b/versions"), 400, 1),
-            dir_row(&rules, PathBuf::from("/a/b"), 400, 1),
+            dir_row(&rules, PathBuf::from("/a/b/versions"), 400, 1, 0),
+            dir_row(&rules, PathBuf::from("/a/b"), 400, 1, 0),
         ];
         rows.sort_by(by_size_then_depth);
         let kept = keep_informative(rows);
@@ -236,8 +272,8 @@ mod tests {
         let home = crate::rules::home_dir();
         // plugins is `trash`; a child of it must not add to the total again.
         let rows = vec![
-            dir_row(&rules, home.join(".codex/plugins"), 1_000, 1),
-            dir_row(&rules, home.join(".codex/plugins/inner"), 400, 1),
+            dir_row(&rules, home.join(".codex/plugins"), 1_000, 1, 0),
+            dir_row(&rules, home.join(".codex/plugins/inner"), 400, 1, 0),
         ];
         assert_eq!(reclaimable(&rows), 1_000);
     }

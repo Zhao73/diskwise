@@ -112,6 +112,58 @@ pub fn build(s: &Scan, rules: &Rules, guard: &Guard, opts: &PlanOptions) -> Plan
     }
 }
 
+/// A plan for exactly the paths someone picked, rather than whatever the rules
+/// would have chosen on their own. Anything protected, unclassified or not
+/// reclaimable is dropped rather than silently acted on.
+pub fn for_paths(s: &Scan, rules: &Rules, guard: &Guard, paths: &[PathBuf]) -> Plan {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut items = Vec::new();
+    for path in paths {
+        let Some(v) = rules.classify(path) else {
+            continue;
+        };
+        if guard.is_protected(path) {
+            continue;
+        }
+        let action = match v.suggest.as_str() {
+            "trash" => Action::Trash,
+            "archive" => Action::Archive,
+            _ => continue,
+        };
+        let size = s.dirs.get(path).map(|e| e.total).unwrap_or(0);
+        let reason = format!("{}: {}", v.rule_id, v.note);
+        match v.retain_days {
+            None => items.push(PlanItem {
+                path: path.clone(),
+                size,
+                action,
+                reason,
+                older_than: None,
+            }),
+            Some(days) => {
+                let cutoff = now - (days as i64) * 86_400;
+                for part in settled_parts(s, path, cutoff) {
+                    items.push(PlanItem {
+                        path: part.path,
+                        size: part.size,
+                        action,
+                        reason: format!("{reason} (only what has been untouched for {days}+ days)"),
+                        older_than: part.older_than,
+                    });
+                }
+            }
+        }
+    }
+    Plan {
+        id: new_plan_id(),
+        created: now as u64,
+        items,
+    }
+}
+
 /// A reclaimable piece of a directory tree: either a whole settled sub-tree, or
 /// the stale files inside a directory that also holds live data.
 pub struct Part {

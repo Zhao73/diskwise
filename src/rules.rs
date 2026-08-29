@@ -43,8 +43,16 @@ pub struct Rule {
     pub regenerable: bool,
     pub suggest: Suggest,
     pub note: String,
+    /// Simplified Chinese note. Optional so a contributor can add a rule
+    /// without being able to write one.
+    #[serde(default)]
+    pub note_zh: Option<String>,
     #[serde(default)]
     pub retain_days: Option<u32>,
+    /// Names a built-in inspector that can look inside this path when the
+    /// filesystem alone cannot explain it.
+    #[serde(default)]
+    pub inspect: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -65,7 +73,11 @@ pub struct Verdict {
     pub regenerable: bool,
     pub suggest: String,
     pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_zh: Option<String>,
     pub retain_days: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inspect: Option<String>,
 }
 
 impl Rules {
@@ -133,7 +145,9 @@ fn verdict(r: &Rule) -> Verdict {
         regenerable: r.regenerable,
         suggest: r.suggest.as_str().to_string(),
         note: r.note.clone(),
+        note_zh: r.note_zh.clone(),
         retain_days: r.retain_days,
+        inspect: r.inspect.clone(),
     }
 }
 

@@ -14,12 +14,15 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::policy::Guard;
 use crate::procs;
 use crate::rules::Rules;
 use crate::scan::{self, Scan};
 use crate::view;
+use crate::{actions, plan};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
+const APP_JS: &str = include_str!("../web/app.js");
 
 struct App {
     scan: RwLock<Scan>,
@@ -80,12 +83,22 @@ pub async fn serve(root: PathBuf, port: u16, open_browser: bool) -> Result<()> {
 
     let router = Router::new()
         .route("/", get(|| async { Html(INDEX_HTML) }))
+        .route(
+            "/app.js",
+            get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], APP_JS) }),
+        )
         .route("/api/status", get(status))
         .route("/api/rows", get(rows))
         .route("/api/listdir", get(listdir))
         .route("/api/rescan", post(rescan))
         .route("/api/procs", get(processes))
         .route("/api/kill", post(kill_proc))
+        .route("/api/policy", get(policy_info))
+        .route("/api/plan", post(build_plan))
+        .route("/api/confirm", post(confirm_plan))
+        .route("/api/agents", get(agents))
+        .route("/api/ask", post(ask_agent))
+        .route("/api/inspect", get(inspect_path))
         .with_state(app);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -215,6 +228,162 @@ async fn kill_proc(AxQuery(p): AxQuery<KillParams>) -> Result<StatusCode, (Statu
     procs::kill(p.pid, p.force)
         .map(|_| StatusCode::OK)
         .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))
+}
+
+#[derive(Serialize)]
+struct PolicyInfo {
+    config_file: PathBuf,
+    mode: String,
+    max_auto_delete_gb: f64,
+    auto_allow: Vec<String>,
+    never: Vec<String>,
+    archives_dir: PathBuf,
+}
+
+async fn policy_info() -> Result<Json<PolicyInfo>, ApiError> {
+    let g = Guard::load().map_err(ApiError::from)?;
+    Ok(Json(PolicyInfo {
+        config_file: crate::policy::policy_path(),
+        mode: format!("{:?}", g.policy.default).to_lowercase(),
+        max_auto_delete_gb: g.policy.max_auto_delete_gb,
+        auto_allow: g.policy.auto_allow.clone(),
+        never: g.policy.never.clone(),
+        archives_dir: actions::archives_dir(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PlanRequest {
+    /// Explicit paths chosen in the UI. Empty means "whatever the rules suggest".
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    include_archives: bool,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    min: u64,
+}
+
+/// Build a plan. Nothing is modified here — this is the preview the person
+/// reviews before they press the second button.
+async fn build_plan(
+    State(app): State<Shared>,
+    Json(req): Json<PlanRequest>,
+) -> Result<Json<actions::Plan>, ApiError> {
+    let guard = Guard::load().map_err(ApiError::from)?;
+    let s = app.scan.read().unwrap();
+    let p = if req.paths.is_empty() {
+        plan::build(
+            &s,
+            &app.rules,
+            &guard,
+            &plan::PlanOptions {
+                min: req.min,
+                category: req.category,
+                include_archives: req.include_archives,
+                ..Default::default()
+            },
+        )
+    } else {
+        plan::for_paths(
+            &s,
+            &app.rules,
+            &guard,
+            &req.paths.iter().map(PathBuf::from).collect::<Vec<_>>(),
+        )
+    };
+    p.save().map_err(ApiError::from)?;
+    Ok(Json(p))
+}
+
+#[derive(Deserialize)]
+struct ConfirmRequest {
+    plan_id: String,
+}
+
+/// Apply a plan. Reaching this endpoint means a person clicked the confirm
+/// button in their own browser — the same standing as `diskwise confirm` on the
+/// command line, and deliberately not something the MCP server can reach.
+async fn confirm_plan(
+    State(app): State<Shared>,
+    Json(req): Json<ConfirmRequest>,
+) -> Result<Json<Vec<actions::Outcome>>, ApiError> {
+    let guard = Guard::load().map_err(ApiError::from)?;
+    let p = actions::Plan::load(&req.plan_id).map_err(ApiError::from)?;
+    let outcomes = actions::apply(&p, &guard);
+    let root = app.scan.read().unwrap().root.clone();
+    spawn_rescan(Arc::clone(&app), root);
+    Ok(Json(outcomes))
+}
+
+#[derive(Deserialize)]
+struct InspectParams {
+    path: String,
+    kind: String,
+}
+
+/// Ask the tool that owns an opaque blob what is inside it.
+async fn inspect_path(
+    AxQuery(p): AxQuery<InspectParams>,
+) -> Result<Json<crate::inspect::Inspection>, ApiError> {
+    let path = PathBuf::from(p.path);
+    tokio::task::spawn_blocking(move || crate::inspect::run(&p.kind, &path))
+        .await
+        .map_err(|e| ApiError(e.to_string()))?
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn agents() -> Json<Vec<&'static str>> {
+    Json(crate::ask::available().iter().map(|a| a.as_str()).collect())
+}
+
+#[derive(Deserialize)]
+struct AskRequest {
+    question: String,
+    #[serde(default)]
+    agent: Option<String>,
+}
+
+/// Hand the scan to an agent CLI the user is already signed into. This spends
+/// their subscription quota, so it only happens on an explicit request.
+async fn ask_agent(
+    State(app): State<Shared>,
+    Json(req): Json<AskRequest>,
+) -> Result<Json<crate::ask::Answer>, ApiError> {
+    let agent = match req.agent.as_deref() {
+        Some(name) => crate::ask::Agent::parse(name)
+            .ok_or_else(|| ApiError(format!("unknown agent: {name}")))?,
+        None => *crate::ask::available()
+            .first()
+            .ok_or_else(|| ApiError("no agent CLI found; install codex or claude".into()))?,
+    };
+    let context = {
+        let s = app.scan.read().unwrap();
+        crate::view::digest(&s, &app.rules)
+    };
+    // Blocking subprocess: keep it off the async runtime's worker threads.
+    let question = req.question;
+    tokio::task::spawn_blocking(move || crate::ask::ask(agent, &question, &context))
+        .await
+        .map_err(|e| ApiError(e.to_string()))?
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+pub struct ApiError(String);
+
+impl From<anyhow::Error> for ApiError {
+    fn from(e: anyhow::Error) -> Self {
+        ApiError(e.to_string())
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        (StatusCode::BAD_REQUEST, self.0).into_response()
+    }
 }
 
 async fn rescan(State(app): State<Shared>) -> impl IntoResponse {

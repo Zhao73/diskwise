@@ -35,6 +35,7 @@ pub struct DirEntry {
     pub total: u64,
     /// Bytes of files sitting directly in this directory.
     pub own: u64,
+    /// Recursive file count, including every descendant.
     pub files: u64,
     /// Newest mtime anywhere in this subtree, seconds since the epoch. Used to
     /// honour retention windows so live data is never archived out from under you.
@@ -73,7 +74,6 @@ impl Agg {
     fn absorb(&mut self, path: PathBuf, own: u64, files: u64, newest: i64, root: &Path) {
         let e = self.dirs.entry(path.clone()).or_default();
         e.own += own;
-        e.files += files;
         e.newest = e.newest.max(newest);
         self.scanned_files += files;
 
@@ -86,6 +86,7 @@ impl Agg {
             match self.dirs.get_mut(p) {
                 Some(anc) => {
                     anc.total += own;
+                    anc.files += files;
                     anc.newest = anc.newest.max(newest);
                 }
                 None => {
@@ -94,7 +95,7 @@ impl Agg {
                         DirEntry {
                             total: own,
                             own: 0,
-                            files: 0,
+                            files,
                             newest,
                         },
                     );
@@ -174,6 +175,13 @@ pub fn scan_with(root: &Path, big_file_threshold: u64) -> Scan {
             }
             // Files are fully accounted for; only directories need walking.
             children.retain(|c| c.as_ref().map(|c| c.file_type.is_dir()).unwrap_or(false));
+
+            // jwalk reads the root's *parent* first to get the root's own
+            // metadata. That callback's path sits outside the scan, and rolling
+            // it up would seed the index with empty entries all the way to `/`.
+            if !path.starts_with(&scan_root) {
+                return;
+            }
 
             let mut agg = sink.lock().unwrap();
             for (dev, ino, bytes) in linked {
@@ -282,6 +290,16 @@ mod tests {
             s.dirs[&root.join("a/b/c")].total
         );
         assert_eq!(s.dirs[&root.join("a")].own, 0);
+        // File counts roll up too — a folder's headline count is everything
+        // under it, not just what happens to sit at the top level.
+        assert_eq!(s.dirs[&root].files, 1);
+        // Nothing above the scan root may appear in the index.
+        let stray: Vec<_> = s.dirs.keys().filter(|k| !k.starts_with(&root)).collect();
+        assert!(
+            stray.is_empty(),
+            "index leaked outside the scan root: {stray:?}"
+        );
+        assert_eq!(s.dirs[&root.join("a/b/c")].files, 1);
         assert_eq!(s.big_files.len(), 1);
         assert_eq!(s.big_files[0].path, root.join("a/b/c/f.bin"));
         assert_eq!(list_files(&root.join("a/b/c")).unwrap().len(), 1);

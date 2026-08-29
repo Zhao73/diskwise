@@ -1,4 +1,6 @@
 mod actions;
+mod ask;
+mod inspect;
 mod launch;
 mod mcp;
 mod plan;
@@ -105,6 +107,17 @@ enum Cmd {
     },
     /// List archives diskwise has made.
     Archives,
+    /// Ask an agent CLI you are already signed into about this disk.
+    /// Uses that subscription's quota, not an API key.
+    Ask {
+        question: String,
+        /// Which agent: codex or claude. Defaults to whichever is installed.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Directory to scan for context (default: your home directory).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
     /// Run as an MCP server on stdio, for Claude Code / Codex.
     Mcp,
     /// Open the visual browser in a local web page.
@@ -204,6 +217,11 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Ask {
+            question,
+            agent,
+            path,
+        } => cmd_ask(&question, agent.as_deref(), path),
         Cmd::Mcp => mcp::serve(),
         Cmd::Ui {
             path,
@@ -288,6 +306,39 @@ fn cmd_scan(a: ScanArgs) -> Result<()> {
             "\nReclaimable in the rows above: {}",
             format_size(reclaimable, DECIMAL)
         );
+    }
+    Ok(())
+}
+
+fn cmd_ask(question: &str, agent: Option<&str>, path: Option<PathBuf>) -> Result<()> {
+    let agents = ask::available();
+    let agent = match agent {
+        Some(name) => ask::Agent::parse(name)
+            .ok_or_else(|| anyhow::anyhow!("unknown agent: {name} (try codex or claude)"))?,
+        None => *agents
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no agent CLI found; install codex or claude"))?,
+    };
+    let root = path.unwrap_or_else(rules::home_dir);
+    let rules = rules::Rules::load_default()?;
+
+    eprintln!("Scanning {} …", root.display());
+    let s = server::load_cache(&root).unwrap_or_else(|| {
+        let fresh = scan::scan(&root);
+        server::save_cache(&fresh);
+        fresh
+    });
+    let context = view::digest(&s, &rules);
+    eprintln!(
+        "Asking {} (this uses your {} quota) …",
+        agent.as_str(),
+        agent.as_str()
+    );
+
+    let answer = ask::ask(agent, question, &context)?;
+    println!("\n{}", answer.text);
+    if let Some(t) = answer.tokens {
+        eprintln!("\n[{} · {} tokens]", answer.agent, t);
     }
     Ok(())
 }

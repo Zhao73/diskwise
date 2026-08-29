@@ -64,6 +64,53 @@ diskwise archives                            # what has been archived
 diskwise restore ~/.diskwise/archives/codex-sessions-2026-06-20260828-1509.tar.zst
 ```
 
+## Cleaning from the browser
+
+Rows the rules call reclaimable get a checkbox. Tick some, press **Clean
+selected**, and you get the same plan the CLI would print — then a second
+button applies it. Two steps, always: the preview is not the action.
+
+A click in your own browser counts as the human in `confirm` mode, exactly like
+typing `diskwise confirm`. The MCP server deliberately cannot reach this path.
+
+## Ask the agent you already pay for
+
+diskwise has no API key and wants none. The **Ask** box hands the scan to
+whichever agent CLI is already signed in on this machine — `codex` or `claude`
+— and that subscription does the thinking:
+
+```sh
+diskwise ask "我磁盘只剩 30G，按风险从低到高该先清哪三样？"
+```
+
+It answers in the language you asked in, and reports what the question cost:
+
+```
+[codex · 21,271 tokens]
+```
+
+The prompt carries the scan with it and tells the agent not to run commands, so
+it answers from the data rather than wandering your filesystem.
+
+## Looking inside opaque things
+
+A Docker disk image really is one 23 GB file — macOS cannot see inside it, and
+neither can any disk visualiser. So diskwise asks the tool that owns it. Rows
+with an inspector get a **Look inside** button:
+
+- `com.docker.docker` → `docker system df`, or an explanation that the daemon
+  is not running and the space is occupied anyway
+- `CoreSimulator/Devices` → `simctl`, turning UUID directories into device names
+
+Rules name an inspector by id; ids resolve to commands defined in Rust, so a
+contributed rule can never introduce a command of its own.
+
+## Languages
+
+English and 简体中文, switchable in Settings (⚙) or with `?lang=zh`. Rule notes
+are translated in `rules/default.toml` itself via `note_zh`, so a rule's
+explanation stays with the rule.
+
 ## Processes
 
 The same window shows what is running: CPU share, resident memory, and — the
@@ -94,7 +141,7 @@ command = "diskwise"
 args = ["mcp"]
 ```
 
-Twelve tools: `top_offenders`, `explain_path`, `plan_cleanup`, `apply_cleanup`,
+Fourteen tools: `top_offenders`, `explain_path`, `plan_cleanup`, `apply_cleanup`,
 `archive_path`, `list_archives`, `restore_archive`, `list_processes`,
 `kill_process`, `policy`, `open_ui`, `screenshot`.
 
