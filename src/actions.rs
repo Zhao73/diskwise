@@ -49,20 +49,53 @@ impl Plan {
     }
 
     pub fn save(&self) -> Result<PathBuf> {
-        let dir = home_dir().join(".diskwise/plans");
-        std::fs::create_dir_all(&dir)?;
+        self.save_in(&plans_dir())
+    }
+
+    pub fn save_in(&self, dir: &Path) -> Result<PathBuf> {
+        std::fs::create_dir_all(dir)?;
+        prune_plans(dir, PLAN_TTL_DAYS);
         let p = dir.join(format!("{}.json", self.id));
         std::fs::write(&p, serde_json::to_vec_pretty(self)?)?;
         Ok(p)
     }
 
     pub fn load(id: &str) -> Result<Plan> {
-        let p = home_dir()
-            .join(".diskwise/plans")
-            .join(format!("{id}.json"));
+        let p = plans_dir().join(format!("{id}.json"));
         let raw = std::fs::read(&p).with_context(|| format!("no such plan: {id}"))?;
         Ok(serde_json::from_slice(&raw)?)
     }
+}
+
+pub fn plans_dir() -> PathBuf {
+    home_dir().join(".diskwise/plans")
+}
+
+/// An unconfirmed plan goes stale quickly — the disk moves on without it. Left
+/// alone these accumulate forever, so every save sweeps the old ones out.
+const PLAN_TTL_DAYS: u64 = 7;
+
+pub fn prune_plans(dir: &Path, ttl_days: u64) -> usize {
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(ttl_days * 86_400);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().is_none_or(|x| x != "json") {
+            continue;
+        }
+        let stale = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|m| m < cutoff)
+            .unwrap_or(false);
+        if stale && std::fs::remove_file(&p).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Outcome of applying one item, so a partial failure still reports honestly.
@@ -436,6 +469,43 @@ mod tests {
         std::fs::remove_file(&archive).ok();
         std::fs::remove_file(archive.with_extension("").with_extension("index.json")).ok();
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn saving_a_plan_sweeps_out_the_stale_ones() {
+        let dir = std::env::temp_dir().join(format!("diskwise-plans-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("1000000.json");
+        std::fs::write(&old, "{}").unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_accessed(long_ago)
+                    .set_modified(long_ago),
+            )
+            .unwrap();
+
+        let plan = Plan {
+            id: "fresh".into(),
+            created: 0,
+            items: vec![],
+        };
+        let saved = plan.save_in(&dir).unwrap();
+
+        assert!(
+            !old.exists(),
+            "a week-old plan is dead weight and should be swept"
+        );
+        assert!(
+            saved.exists(),
+            "the plan just written must survive its own sweep"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

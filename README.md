@@ -165,6 +165,8 @@ Beyond that:
   and stale data gives up only the stale half.
 - Sizes come from allocated blocks, not apparent size, so they match `du` on
   APFS where clones and sparse files lie.
+- Unconfirmed plans expire. Saving one sweeps out anything older than a week,
+  because a stale plan describes a disk that has since moved on.
 
 ## Performance, honestly
 

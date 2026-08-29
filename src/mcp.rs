@@ -561,6 +561,8 @@ mod tests {
             "nothing may be touched without confirmation"
         );
 
+        // A test must not leave a plan file behind in the real home directory.
+        std::fs::remove_file(actions::plans_dir().join(format!("{plan_id}.json"))).ok();
         std::fs::remove_dir_all(&tmp).ok();
     }
 
