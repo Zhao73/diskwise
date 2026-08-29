@@ -189,8 +189,12 @@ category = "agent-session"
 regenerable = false
 suggest = "archive"
 retain_days = 30
-note = "Codex conversation rollouts (.jsonl). Nothing regenerates these, but they are plain text and compress ~10x. Archive, don't delete."
+note = "Codex conversation rollouts (.jsonl). Nothing regenerates these. Measured ~2.4x under zstd — lower than plain text because roughly half of a typical rollout is base64 image data. Archive, don't delete."
 ```
+
+Notes carry measured numbers, not guesses — the ~2.4x above came from
+compressing a real sample, after an earlier claim of 10x turned out to be
+wrong (half of a Codex rollout is base64 screenshots, which zstd cannot help).
 
 `suggest` is one of `archive` (irreplaceable but compressible), `trash`
 (regenerable), `review` (only you can judge), `never` (protected).

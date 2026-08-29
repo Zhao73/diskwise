@@ -1,7 +1,7 @@
 # What lives where on a developer Mac, and whether it is safe to reclaim.
 #
 # suggest:
-#   archive  - irreplaceable but compresses ~10x; tar.zst it, keep it readable
+#   archive  - irreplaceable but compressible; tar.zst it, keep it readable
 #   trash    - regenerable; move to the Trash, tools will rebuild it on demand
 #   review   - big and worth a look, but only you know if it matters
 #
@@ -16,7 +16,7 @@ category = "agent-session"
 regenerable = false
 suggest = "archive"
 retain_days = 30
-note = "Codex conversation rollouts (.jsonl). Nothing regenerates these, but they are plain text and compress ~10x. Archive, don't delete."
+note = "Codex conversation rollouts (.jsonl). Nothing regenerates these. Measured ~2.4x under zstd — lower than plain text because roughly half of a typical rollout is base64 image data. Archive, don't delete."
 
 [[rule]]
 id = "claude-projects"
