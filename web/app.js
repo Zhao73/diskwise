@@ -102,10 +102,14 @@ async function loadStatus() {
   state.root = s.root;
   state.user = s.user;
   if (!state.dir) state.dir = s.root;
-  $('summary').innerHTML = s.total === 0 && s.scanning
-    ? `${t('scanning')} <b>${s.root}</b> ${t('firstTime')}`
-    : `<b>${fmt(s.total)}</b> ${t('inFiles', { n: s.files.toLocaleString() })}
-       · ${s.root} ${s.scanning ? `· <b>${t('rescanning')}</b>` : ''}`;
+  if (s.total === 0 && s.scanning) {
+    $('total').innerHTML = `<span class="spin">◐</span>`;
+    $('sub').textContent = `${t('scanning')} ${s.root} ${t('firstTime')}`;
+  } else {
+    $('total').textContent = fmt(s.total);
+    $('sub').textContent = `${t('inFiles', { n: s.files.toLocaleString() })} · ${s.root}`
+      + (s.scanning ? ` · ${t('rescanning')}` : '');
+  }
   $('warn').innerHTML = s.denied > 20
     ? `<div class="warn">${t('fullDisk', { n: s.denied })}</div>` : '';
   const sel = $('category');
@@ -125,8 +129,8 @@ async function load() {
   if (state.category) p.set('category', state.category);
   if (state.contains) p.set('contains', state.contains);
   const data = await (await fetch('/api/rows?' + p)).json();
-  $('reclaim').innerHTML = data.reclaimable
-    ? `${t('reclaimable')}: <b style="color:var(--accent)">${fmt(data.reclaimable)}</b>` : '';
+  $('reclaim').hidden = !data.reclaimable;
+  $('reclaim').innerHTML = `${t('reclaimable')} <b>${fmt(data.reclaimable)}</b>`;
   renderCrumbs();
   renderTable(data.rows);
   renderTreemap(data.rows);
@@ -153,10 +157,11 @@ function renderTable(rows) {
   $('rows').innerHTML = rows.map(r => {
     const v = r.verdict;
     const c = colorOf(v && v.category);
+    const pct = Math.max(2, r.size / max * 100);
     const what = v
-      ? `<span class="tag" style="background:${c}22;color:${c}">${catLabel(v.category)} · ${suggestLabel(v.suggest)}</span>
-         <div class="note">${escapeHtml(noteOf(v))}</div>`
-      : `<span class="tag" style="background:#ffffff10;color:var(--dim)">${t('noRule')}</span>
+      ? `<span class="tag" style="background:${c}1f;color:${c}">${catLabel(v.category)} · ${suggestLabel(v.suggest)}</span>
+         <div class="note clamp" title="${escapeHtml(noteOf(v))}">${escapeHtml(noteOf(v))}</div>`
+      : `<span class="tag" style="background:#ffffff0d;color:var(--faint)">${t('noRule')}</span>
          <div class="note">${facts(r)}</div>`;
     // Only rows the rules call reclaimable can be selected; everything else has
     // no checkbox at all, so there is nothing to tick by mistake.
@@ -165,16 +170,21 @@ function renderTable(rows) {
       <td class="pick">${pickable
         ? `<input type="checkbox" data-path="${escapeHtml(r.path)}"${sel.has(r.path) ? ' checked' : ''}>`
         : ''}</td>
-      <td class="size">${r.human}</td>
-      <td class="gauge"><div style="width:${Math.max(2, r.size / max * 100)}%;background:${c}"></div></td>
-      <td class="name" data-p="${r.is_dir ? r.path : ''}">
-        <span class="kind">${r.is_dir ? '📁' : '📄'}</span>${escapeHtml(r.name)}</td>
-      <td>${what}${v && v.inspect
-        ? `<div><button class="inspect" data-p="${escapeHtml(r.path)}" data-k="${v.inspect}">${t('expand')}</button></div>`
+      <td class="size">
+        <div class="v">${r.human}</div>
+        <div class="track"><i style="width:${pct}%;background:${c}"></i></div>
+      </td>
+      <td class="name">
+        <div class="n" data-p="${r.is_dir ? escapeHtml(r.path) : ''}">
+          <span class="kind">${r.is_dir ? '▸' : '·'}</span>${escapeHtml(r.name)}</div>
+        <div class="p">${escapeHtml(r.path)}</div>
+      </td>
+      <td class="what">${what}${v && v.inspect
+        ? `<div><button class="btn inspect" data-p="${escapeHtml(r.path)}" data-k="${v.inspect}">${t('expand')}</button></div>`
         : ''}</td>
-      <td class="path">${escapeHtml(r.path)}</td>
     </tr>`;
   }).join('');
+
   bindCheckboxes();
   $('rows').querySelectorAll('button.inspect').forEach(b => {
     b.onclick = async e => {
@@ -193,8 +203,8 @@ function renderTable(rows) {
       $('a-close').textContent = t('close');
     };
   });
-  $('rows').querySelectorAll('td.name[data-p]:not([data-p=""])').forEach(td => {
-    td.onclick = () => { state.mode = 'dir'; setMode(); state.dir = td.dataset.p; load(); };
+  $('rows').querySelectorAll('.n[data-p]:not([data-p=""])').forEach(el => {
+    el.onclick = () => { state.mode = 'dir'; setMode(); state.dir = el.dataset.p; load(); };
   });
 }
 
@@ -422,17 +432,20 @@ function renderProcs() {
 
   const maxCpu = Math.max(1, ...rows.map(p => p.cpu));
   $('prows').innerHTML = rows.map((p, i) => `<tr data-i="${i}">
-    <td class="num">${p.pid}</td>
-    <td class="num">${p.cpu.toFixed(1)}</td>
-    <td class="gauge"><div style="width:${Math.max(2, p.cpu / maxCpu * 100)}%;
-      background:${p.uptime > 86400 ? 'var(--c-agent-session)' : 'var(--c-build)'}"></div></td>
+    <td class="num" style="color:var(--faint)">${p.pid}</td>
+    <td class="num">
+      <div class="v">${p.cpu.toFixed(1)}</div>
+      <div class="track"><i style="width:${Math.max(2, p.cpu / maxCpu * 100)}%;
+        background:${p.uptime > 86400 ? 'var(--c-agent-session)' : 'var(--c-build)'}"></i></div>
+    </td>
     <td class="num">${fmt(p.rss)}</td>
-    <td class="num">${p.uptime_human}</td>
-    <td>${escapeHtml(p.name)}<div class="note">${escapeHtml(p.command.slice(0, 90))}</div></td>
+    <td class="num" style="${p.uptime > 86400 ? 'color:var(--c-agent-session)' : ''}">${p.uptime_human}</td>
+    <td class="name"><div class="n">${escapeHtml(p.name)}</div>
+      <div class="p">${escapeHtml(p.command.slice(0, 110))}</div></td>
     <td class="act">${p.protected
       ? `<span class="locked">${t('protectedTag')}</span>`
-      : `<button data-pid="${p.pid}">${t('quit')}</button>
-         <button class="danger" data-pid="${p.pid}" data-force="1">${t('force')}</button>`}</td>
+      : `<button class="btn" data-pid="${p.pid}">${t('quit')}</button>
+         <button class="btn danger" data-pid="${p.pid}" data-force="1">${t('force')}</button>`}</td>
   </tr>`).join('');
 
   $('prows').querySelectorAll('tr').forEach(tr => {
@@ -497,8 +510,18 @@ function applyUrlParams() {
   if (q.has('days')) { pstate.days = +q.get('days'); $('pdays').value = q.get('days'); }
   if (q.has('mine')) { pstate.mine = q.get('mine') !== 'false'; $('pmine').checked = pstate.mine; }
   if (q.has('sort')) { pstate.sort = q.get('sort'); }
+  if (q.get('panel') === 'settings') showSettings();
   if (q.has('lang')) { LANG = q.get('lang'); $('s-lang').value = LANG; applyLang(); }
-  if (q.has('min')) { state.min = +q.get('min'); $('min').value = q.get('min'); }
+  if (q.has('min')) {
+    state.min = +q.get('min');
+    // A link can carry any threshold; if it isn't one of the presets, add it
+    // rather than leaving the control blank.
+    const sel = $('min');
+    if (![...sel.options].some(o => o.value === q.get('min'))) {
+      sel.add(new Option('≥ ' + fmt(state.min), q.get('min')), 0);
+    }
+    sel.value = q.get('min');
+  }
   if (q.has('category')) { state.category = q.get('category'); $('category').value = state.category; }
   if (q.has('dir')) { state.dir = q.get('dir'); state.mode = 'dir'; setMode(); }
   if (q.has('files')) { state.mode = 'files'; setMode(); }
@@ -598,7 +621,7 @@ function applyLang() {
   set('mode-tree', 'biggest'); set('mode-dir', 'browse'); set('mode-files', 'filesOnly');
   set('rescan', 'rescan'); set('tab-disk', 'disk'); set('tab-proc', 'processes');
   set('sort-cpu', 'byCpu'); set('sort-mem', 'byMem'); set('sort-up', 'byUptime');
-  set('th-size', 'size'); set('th-name', 'name'); set('th-what', 'whatItIs'); set('th-path', 'path');
+  set('th-size', 'size'); set('th-name', 'name'); set('th-what', 'whatItIs');
   set('empty', 'empty');
   set('s-title', 'settings'); set('s-lang-label', 'language');
   set('s-policy-title', 'policyTitle'); set('s-close', 'close');
@@ -609,7 +632,7 @@ function applyLang() {
   const ages = ['anyAge', 'over12h', 'over1d', 'over3d', 'over7d'];
   [...$('pdays').options].forEach((o, i) => { o.textContent = t(ages[i]); });
   $('pmine').parentElement.lastChild.textContent = ' ' + t('onlyMine');
-  const ph = ['pid', 'byCpu', '', 'memory', 'uptime', 'process', ''];
+  const ph = ['pid', 'CPU%', 'memory', 'uptime', 'process', ''];
   document.querySelectorAll('#panel-proc thead th').forEach((th, i) => {
     if (ph[i]) th.textContent = i === 1 ? 'CPU%' : t(ph[i]);
   });
