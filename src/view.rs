@@ -79,14 +79,26 @@ pub fn rows(s: &Scan, rules: &Rules, q: &Query) -> Vec<Row> {
         out.retain(|r| r.path.to_string_lossy().to_lowercase().contains(&needle));
     }
     if q.dir.is_none() && !q.files_only && !q.keep_nested {
-        out.sort_by(|a, b| b.size.cmp(&a.size));
+        out.sort_by(by_size_then_depth);
         out = keep_informative(out);
     }
-    out.sort_by(|a, b| b.size.cmp(&a.size));
+    out.sort_by(by_size_then_depth);
     if q.limit > 0 {
         out.truncate(q.limit);
     }
     out
+}
+
+/// Largest first; on a tie the shallower path wins. A directory holding one
+/// child of the same size would otherwise sort arbitrarily, and the collapse
+/// below would keep whichever of the two it happened to see first.
+fn by_size_then_depth(a: &Row, b: &Row) -> std::cmp::Ordering {
+    b.size.cmp(&a.size).then_with(|| {
+        a.path
+            .components()
+            .count()
+            .cmp(&b.path.components().count())
+    })
 }
 
 /// Collapse a nested row into its ancestor only when it adds nothing: same
@@ -202,6 +214,20 @@ mod tests {
         ]);
         let names: Vec<String> = kept.iter().map(|r| r.name.clone()).collect();
         assert_eq!(names, vec![".codex", "sessions", "plugins"]);
+    }
+
+    /// A directory whose single child is the same size must not appear twice.
+    #[test]
+    fn equal_sized_parent_and_child_collapse_to_the_parent() {
+        let rules = Rules::load_default().unwrap();
+        let mut rows = vec![
+            dir_row(&rules, PathBuf::from("/a/b/versions"), 400, 1),
+            dir_row(&rules, PathBuf::from("/a/b"), 400, 1),
+        ];
+        rows.sort_by(by_size_then_depth);
+        let kept = keep_informative(rows);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].path, PathBuf::from("/a/b"));
     }
 
     #[test]

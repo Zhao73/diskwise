@@ -418,6 +418,17 @@ function humanDur(s) {
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
 }
 
+// Deep-linkable views: ?days=3&find=Chrome#processes shares exactly what you see.
+function applyUrlParams() {
+  const q = new URLSearchParams(location.search);
+  if (q.has('find')) { pstate.find = q.get('find'); $('pfind').value = pstate.find; }
+  if (q.has('days')) { pstate.days = +q.get('days'); $('pdays').value = q.get('days'); }
+  if (q.has('mine')) { pstate.mine = q.get('mine') !== 'false'; $('pmine').checked = pstate.mine; }
+  if (q.has('sort')) { pstate.sort = q.get('sort'); }
+  if (q.has('min')) { state.min = +q.get('min'); $('min').value = q.get('min'); }
+  if (q.has('category')) { state.category = q.get('category'); $('category').value = state.category; }
+}
+
 function showTab(which) {
   $('tab-disk').classList.toggle('on', which === 'disk');
   $('tab-proc').classList.toggle('on', which === 'proc');
@@ -459,7 +470,7 @@ let t; $('contains').oninput = e => {
 $('rescan').onclick = async () => { await fetch('/api/rescan', { method: 'POST' }); loadStatus(); };
 window.onresize = () => { load(); if (!$('panel-proc').hidden) renderProcs(); };
 
-loadStatus().then(load);
+loadStatus().then(() => { applyUrlParams(); load(); });
 if (location.hash === '#processes') showTab('proc');
 </script>
 </body>

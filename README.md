@@ -9,6 +9,9 @@ in active use and must not be touched. diskwise does.
 
 ![Disk view](docs/disk.png)
 
+<sub>Screenshots are taken against a synthetic tree with the same shape as a
+real developer home, so nobody's folder names end up in a README.</sub>
+
 ## Why
 
 This started because a laptop hit 93% full and the owner had no idea why. The
