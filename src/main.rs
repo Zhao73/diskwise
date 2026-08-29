@@ -1,5 +1,7 @@
 mod actions;
+mod annotate;
 mod ask;
+mod identify;
 mod inspect;
 mod launch;
 mod mcp;

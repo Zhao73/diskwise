@@ -34,6 +34,10 @@ const I18N = {
     askPlaceholder: 'Ask about this disk…', askBtn: 'Ask {agent}',
     askHint: 'runs the {agent} CLI you are signed into — it costs that quota',
     asking: 'asking {agent}…', askCost: '{agent} · {n} tokens of your quota',
+    askAsync: 'You can close this and keep working — the answer will come find you.',
+    thinking: '{n} question(s) in flight', answerReady: 'Answer ready →',
+    analyzing: 'analyzing…', srcEvidence: 'from files', srcAgent: 'from agent',
+    annotating: 'explaining folders {done}/{total}', annFailed: 'annotation stopped',
     expand: 'Look inside', insideOf: 'Inside {name}',
     nothingInside: 'The tool that owns this could not be reached.',
   },
@@ -70,6 +74,10 @@ const I18N = {
     askPlaceholder: '就这块磁盘提问…', askBtn: '问 {agent}',
     askHint: '调用你本机已登录的 {agent}，消耗的是它的额度',
     asking: '正在询问 {agent}…', askCost: '{agent} · 消耗你 {n} tokens',
+    askAsync: '可以关掉继续做别的，答案好了会来找你。',
+    thinking: '{n} 个问题进行中', answerReady: '答案已就绪 →',
+    analyzing: '分析中…', srcEvidence: '来自文件', srcAgent: '来自 AI',
+    annotating: '正在解释文件夹 {done}/{total}', annFailed: '标注中断',
     expand: '看看里面', insideOf: '{name} 内部',
     nothingInside: '无法连接到管理它的工具。',
   },
@@ -161,8 +169,7 @@ function renderTable(rows) {
     const what = v
       ? `<span class="tag" style="background:${c}1f;color:${c}">${catLabel(v.category)} · ${suggestLabel(v.suggest)}</span>
          <div class="note clamp" title="${escapeHtml(noteOf(v))}">${escapeHtml(noteOf(v))}</div>`
-      : `<span class="tag" style="background:#ffffff0d;color:var(--faint)">${t('noRule')}</span>
-         <div class="note">${facts(r)}</div>`;
+      : annotated(r);
     // Only rows the rules call reclaimable can be selected; everything else has
     // no checkbox at all, so there is nothing to tick by mistake.
     const pickable = r.is_dir && v && (v.suggest === 'trash' || v.suggest === 'archive');
@@ -290,6 +297,25 @@ $('p-cancel').onclick = () => {
 
 // No rule matched — so state facts instead of inventing a description. A big
 // folder diskwise doesn't recognise is almost always your own data.
+// A folder with no rule is not a blank: say what the evidence found, or what
+// the agent worked out, and always where the claim came from.
+function annotated(r) {
+  const a = ANN.items[r.path];
+  if (!a) {
+    return `<span class="tag" style="background:#ffffff0d;color:var(--faint)">${
+      ANN.running ? t('analyzing') : t('noRule')}</span>
+      <div class="note">${facts(r)}</div>`;
+  }
+  const isAgent = a.source === 'agent';
+  const text = (LANG === 'zh' && a.text_zh) ? a.text_zh : a.text;
+  const c = isAgent ? 'var(--c-agent-artifact)' : 'var(--c-toolchain)';
+  return `<span class="tag" style="background:${c}1f;color:${c}">${
+    isAgent ? t('srcAgent') : t('srcEvidence')}</span>
+    <div class="note clamp" title="${escapeHtml(text)}">${escapeHtml(text)}</div>
+    <div class="note" style="color:var(--faint)">${
+      a.markers.length ? escapeHtml(a.markers.join(' · ')) + ' · ' : ''}${facts(r)}</div>`;
+}
+
 function facts(r) {
   const bits = [];
   if (r.is_dir) bits.push(t('nFiles', { n: r.files.toLocaleString() }));
@@ -554,6 +580,37 @@ let pt; $('pfind').oninput = e => {
   clearTimeout(pt); pt = setTimeout(() => { pstate.find = e.target.value; renderProcs(); }, 200);
 };
 
+// ------------------------------------------------------- annotations
+
+// What each unclassified folder actually is. Filled in behind your back:
+// evidence first, then whatever the agent works out, streaming in as it lands.
+let ANN = { items: {}, running: false, done: 0, total: 0, error: null };
+
+async function pollAnnotations() {
+  try {
+    const a = await (await fetch('/api/annotations')).json();
+    const changed = a.done !== ANN.done || a.running !== ANN.running;
+    ANN = a;
+    renderAnnProgress();
+    if (changed) load();
+  } catch {}
+  setTimeout(pollAnnotations, ANN.running ? 2500 : 15000);
+}
+
+function renderAnnProgress() {
+  const el = $('annstat');
+  if (ANN.error && !ANN.running) {
+    el.hidden = false;
+    el.className = 'stat';
+    el.textContent = t('annFailed');
+    el.title = ANN.error;
+    return;
+  }
+  el.hidden = !ANN.running;
+  el.title = '';
+  el.innerHTML = `<span class="spin">◐</span> ${t('annotating', { done: ANN.done, total: ANN.total })}`;
+}
+
 // ------------------------------------------------------- ask an agent
 
 let AGENTS = [];
@@ -576,17 +633,56 @@ $('askgo').onclick = async () => {
   const q = $('askq').value.trim();
   if (!q) return;
   $('a-title').textContent = q;
-  $('a-body').innerHTML = `<span class="spin">◐</span> ${t('asking', { agent: AGENTS[0] })}`;
+  $('a-body').innerHTML = `<span class="spin">◐</span> ${t('asking', { agent: AGENTS[0] })}
+    <div class="cost">${t('askAsync')}</div>`;
   $('askmodal').hidden = false;
   const res = await fetch('/api/ask', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ question: q }),
   });
   if (!res.ok) { $('a-body').textContent = await res.text(); return; }
-  const a = await res.json();
-  $('a-body').innerHTML = escapeHtml(a.text) +
-    (a.tokens ? `<div class="cost">${t('askCost', { agent: a.agent, n: a.tokens.toLocaleString() })}</div>` : '');
+  const { job_id } = await res.json();
+  // The answer arrives when it arrives. Closing this box does not cancel it,
+  // and nothing else on the page stops working meanwhile.
+  pollJob(job_id, q);
 };
+
+const pending = new Map();
+
+async function pollJob(id, question) {
+  const j = await (await fetch(`/api/job/${id}`)).json();
+  if (j.status === 'running') {
+    pending.set(id, question);
+    renderPending();
+    return setTimeout(() => pollJob(id, question), 1500);
+  }
+  pending.delete(id);
+  renderPending();
+  const body = j.status === 'done'
+    ? escapeHtml(j.answer.text) + (j.answer.tokens
+        ? `<div class="cost">${t('askCost', { agent: j.answer.agent, n: j.answer.tokens.toLocaleString() })}</div>`
+        : '')
+    : escapeHtml(j.error);
+  // If the person moved on, do not yank them back — offer it instead.
+  if ($('askmodal').hidden || $('a-title').textContent !== question) {
+    $('answerready').hidden = false;
+    $('answerready').onclick = () => {
+      $('a-title').textContent = question;
+      $('a-body').innerHTML = body;
+      $('askmodal').hidden = false;
+      $('answerready').hidden = true;
+    };
+    $('answerready').textContent = t('answerReady');
+    return;
+  }
+  $('a-body').innerHTML = body;
+}
+
+function renderPending() {
+  $('askgo').disabled = false;
+  $('askpending').hidden = pending.size === 0;
+  $('askpending').innerHTML = `<span class="spin">◐</span> ${t('thinking', { n: pending.size })}`;
+}
 $('askq').onkeydown = e => { if (e.key === 'Enter') $('askgo').click(); };
 $('a-close').onclick = () => { $('askmodal').hidden = true; };
 
@@ -659,5 +755,6 @@ window.onresize = () => { load(); if (!$('panel-proc').hidden) renderProcs(); };
 document.documentElement.lang = LANG === 'zh' ? 'zh-Hans' : 'en';
 applyLang();
 loadAgents();
+pollAnnotations();
 loadStatus().then(() => { applyUrlParams(); load(); });
 if (location.hash === '#processes') showTab('proc');

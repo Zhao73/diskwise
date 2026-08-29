@@ -41,7 +41,7 @@ impl Agent {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Answer {
     pub agent: &'static str,
     pub text: String,

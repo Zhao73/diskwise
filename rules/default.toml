@@ -183,3 +183,32 @@ regenerable = false
 suggest = "never"
 note = "Credentials, iCloud Drive, git history, iOS backups. diskwise refuses to touch these regardless of configuration."
 note_zh = "凭据、iCloud 云盘、git 历史、iOS 备份。无论怎么配置，diskwise 都拒绝碰这些。"
+
+# --------------------------------------------- found by annotating a real Mac
+
+[[rule]]
+id = "crash-reports"
+match = ["~/Library/Application Support/*/Crashpad/pending", "~/Library/Application Support/*/Crashpad/completed", "~/Library/Logs/DiagnosticReports"]
+category = "diagnostics"
+regenerable = true
+suggest = "trash"
+note = "Crash dumps queued for upload that never left. An app that crashes often can pile up hundreds of thousands of these; nothing reads them locally."
+note_zh = "等待上传但一直没发出去的崩溃转储。崩溃频繁的 App 能攒下几十万个文件，本地没有任何东西会读它们。"
+
+[[rule]]
+id = "agent-vm-bundles"
+match = ["~/Library/Application Support/Claude/vm_bundles", "~/Library/Application Support/*/vm_bundles"]
+category = "vm"
+regenerable = true
+suggest = "review"
+note = "The virtual machine image an agent runs sandboxed work inside. Regenerable, but it is a large download to get back."
+note_zh = "agent 用来跑沙箱任务的虚拟机镜像。可重新生成，但要重新下载很大一份。"
+
+[[rule]]
+id = "im-media-cache"
+match = ["**/com.tencent.xinWeChat/**/MessageTemp", "~/Library/Containers/com.tencent.xinWeChat/**/Message/MessageTemp"]
+category = "chat-media"
+regenerable = false
+suggest = "review"
+note = "Files, images and video received in chats. The app may not be able to fetch old ones again — open the chat and save anything you want before clearing."
+note_zh = "聊天里收到的文件、图片和视频。旧的可能无法再次下载——清理前先去聊天里把要留的存出来。"

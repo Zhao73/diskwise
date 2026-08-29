@@ -1,10 +1,11 @@
 //! Local web UI. Serves a single embedded page plus a small read-only JSON API.
 //! Binds to loopback only — this thing can see your whole home directory.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Result;
 use axum::extract::{Query as AxQuery, State};
@@ -25,9 +26,21 @@ const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
 
 struct App {
-    scan: RwLock<Scan>,
-    rules: Rules,
+    scan: RwLock<Arc<Scan>>,
+    rules: Arc<Rules>,
     scanning: AtomicBool,
+    annotations: Arc<Mutex<crate::annotate::Store>>,
+    annotating: Arc<crate::annotate::Progress>,
+    /// Long-running questions, so the page never has to sit and wait.
+    jobs: Mutex<HashMap<String, Job>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+enum Job {
+    Running,
+    Done { answer: crate::ask::Answer },
+    Failed { error: String },
 }
 
 type Shared = Arc<App>;
@@ -74,12 +87,20 @@ pub async fn serve(root: PathBuf, port: u16, open_browser: bool) -> Result<()> {
     };
 
     let app = Arc::new(App {
-        scan: RwLock::new(initial),
-        rules: Rules::load_default()?,
+        scan: RwLock::new(Arc::new(initial)),
+        rules: Arc::new(Rules::load_default()?),
         scanning: AtomicBool::new(false),
+        annotations: Arc::new(Mutex::new(crate::annotate::Store::load())),
+        annotating: Arc::new(crate::annotate::Progress::default()),
+        jobs: Mutex::new(HashMap::new()),
     });
 
     spawn_rescan(Arc::clone(&app), root.clone());
+    // A cached index means nothing is scanning, so annotate what we already have.
+    if !app.scanning.load(Ordering::SeqCst) {
+        let s = Arc::clone(&app.scan.read().unwrap());
+        start_annotating(&app, s);
+    }
 
     let router = Router::new()
         .route("/", get(|| async { Html(INDEX_HTML) }))
@@ -99,6 +120,8 @@ pub async fn serve(root: PathBuf, port: u16, open_browser: bool) -> Result<()> {
         .route("/api/agents", get(agents))
         .route("/api/ask", post(ask_agent))
         .route("/api/inspect", get(inspect_path))
+        .route("/api/annotations", get(annotations))
+        .route("/api/job/{id}", get(job_status))
         .with_state(app);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -117,11 +140,24 @@ fn spawn_rescan(app: Shared, root: PathBuf) {
         return; // one at a time
     }
     std::thread::spawn(move || {
-        let fresh = scan::scan(&root);
+        let fresh = Arc::new(scan::scan(&root));
         save_cache(&fresh);
-        *app.scan.write().unwrap() = fresh;
+        *app.scan.write().unwrap() = Arc::clone(&fresh);
         app.scanning.store(false, Ordering::SeqCst);
+        // The point of the whole exercise: by the time someone has finished
+        // reading the first screen, the folders on it are already explained.
+        start_annotating(&app, fresh);
     });
+}
+
+fn start_annotating(app: &Shared, scan: Arc<Scan>) {
+    crate::annotate::spawn(
+        scan,
+        Arc::clone(&app.rules),
+        Arc::clone(&app.annotations),
+        Arc::clone(&app.annotating),
+        crate::ask::available().first().copied(),
+    );
 }
 
 #[derive(Serialize)]
@@ -348,10 +384,13 @@ struct AskRequest {
 
 /// Hand the scan to an agent CLI the user is already signed into. This spends
 /// their subscription quota, so it only happens on an explicit request.
+/// Returns a job id straight away. An agent takes tens of seconds to think and
+/// there is no reason for the page — or the person reading it — to sit still
+/// for that.
 async fn ask_agent(
     State(app): State<Shared>,
     Json(req): Json<AskRequest>,
-) -> Result<Json<crate::ask::Answer>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let agent = match req.agent.as_deref() {
         Some(name) => crate::ask::Agent::parse(name)
             .ok_or_else(|| ApiError(format!("unknown agent: {name}")))?,
@@ -361,15 +400,58 @@ async fn ask_agent(
     };
     let context = {
         let s = app.scan.read().unwrap();
-        crate::view::digest(&s, &app.rules)
+        crate::view::digest(&s.clone(), &app.rules)
     };
-    // Blocking subprocess: keep it off the async runtime's worker threads.
+    let id = format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    app.jobs.lock().unwrap().insert(id.clone(), Job::Running);
+
     let question = req.question;
-    tokio::task::spawn_blocking(move || crate::ask::ask(agent, &question, &context))
-        .await
-        .map_err(|e| ApiError(e.to_string()))?
+    let jobs_app = Arc::clone(&app);
+    let job_id = id.clone();
+    std::thread::spawn(move || {
+        let result = crate::ask::ask(agent, &question, &context);
+        let entry = match result {
+            Ok(answer) => Job::Done { answer },
+            Err(e) => Job::Failed {
+                error: e.to_string(),
+            },
+        };
+        jobs_app.jobs.lock().unwrap().insert(job_id, entry);
+    });
+    Ok(Json(serde_json::json!({ "job_id": id })))
+}
+
+async fn job_status(
+    State(app): State<Shared>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<Job>, ApiError> {
+    app.jobs
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
         .map(Json)
-        .map_err(ApiError::from)
+        .ok_or_else(|| ApiError(format!("no such job: {id}")))
+}
+
+#[derive(Serialize)]
+struct Annotations {
+    #[serde(flatten)]
+    progress: crate::annotate::Status,
+    items: HashMap<PathBuf, crate::annotate::Annotation>,
+}
+
+async fn annotations(State(app): State<Shared>) -> Json<Annotations> {
+    Json(Annotations {
+        progress: app.annotating.status(),
+        items: app.annotations.lock().unwrap().items.clone(),
+    })
 }
 
 pub struct ApiError(String);

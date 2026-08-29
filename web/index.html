@@ -250,6 +250,7 @@
     </select>
     <input id="contains" type="search" placeholder="filter by path…" size="18">
     <div class="spacer"></div>
+    <div class="stat" id="annstat" hidden></div>
     <div class="chip" id="reclaim" hidden></div>
   </div>
 
@@ -257,6 +258,8 @@
     <input id="askq" type="search" placeholder="Ask about this disk…" style="flex:1;min-width:240px">
     <button id="askgo" class="btn primary"></button>
     <span class="note" id="askhint"></span>
+    <span class="stat" id="askpending" hidden></span>
+    <button class="btn primary" id="answerready" hidden></button>
   </div>
   <div id="cleanbar">
     <span id="selcount"></span>
