@@ -1,4 +1,5 @@
 mod actions;
+mod launch;
 mod mcp;
 mod plan;
 mod policy;

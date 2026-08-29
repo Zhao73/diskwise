@@ -427,6 +427,8 @@ function applyUrlParams() {
   if (q.has('sort')) { pstate.sort = q.get('sort'); }
   if (q.has('min')) { state.min = +q.get('min'); $('min').value = q.get('min'); }
   if (q.has('category')) { state.category = q.get('category'); $('category').value = state.category; }
+  if (q.has('dir')) { state.dir = q.get('dir'); state.mode = 'dir'; setMode(); }
+  if (q.has('files')) { state.mode = 'files'; setMode(); }
 }
 
 function showTab(which) {

@@ -13,11 +13,13 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use anyhow::Result;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::rules::{home_dir, Rules};
 use crate::scan::Scan;
-use crate::{actions, plan, policy, procs, scan, server, view};
+use crate::{actions, launch, plan, policy, procs, scan, server, view};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -96,7 +98,7 @@ impl Session {
                 match self.call(&name, args) {
                     // A refused action is a normal result an agent must read,
                     // not a transport error — so it comes back as isError text.
-                    Ok(v) => Ok(json!({ "content": [text(&v)], "isError": false })),
+                    Ok(v) => Ok(json!({ "content": content_for(v), "isError": false })),
                     Err(e) => {
                         Ok(json!({ "content": [text(&json!(e.to_string()))], "isError": true }))
                     }
@@ -264,6 +266,38 @@ impl Session {
                 procs::kill(pid, force)?;
                 Ok(json!({ "signalled": pid, "signal": if force { "SIGKILL" } else { "SIGTERM" } }))
             }
+            "open_ui" => {
+                let port = num_arg("port").unwrap_or(launch::DEFAULT_PORT as f64) as u16;
+                let root = path.as_deref().map(PathBuf::from);
+                let server = launch::ensure_server(port, root.as_deref())?;
+                let url = launch::view_url(&server.url, &view_arg(&args), &url_params(&args));
+                if args
+                    .get("open_browser")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    launch::open_in_browser(&url)?;
+                }
+                Ok(json!({
+                    "url": url,
+                    "already_running": server.started.is_none(),
+                    "note": "The page is live and refreshes on its own. Every filter is in the \
+                             URL, so you can hand the user a link to exactly what you are \
+                             describing. Use `screenshot` if you need to see it yourself.",
+                }))
+            }
+            "screenshot" => {
+                let port = num_arg("port").unwrap_or(launch::DEFAULT_PORT as f64) as u16;
+                let root = path.as_deref().map(PathBuf::from);
+                let server = launch::ensure_server(port, root.as_deref())?;
+                let url = launch::view_url(&server.url, &view_arg(&args), &url_params(&args));
+                let width = num_arg("width").unwrap_or(1440.0) as u32;
+                let height = num_arg("height").unwrap_or(900.0) as u32;
+                let png = launch::screenshot(&url, width, height)?;
+                // Returned as an image so a vision-capable host can actually
+                // look at the chart rather than being told about it.
+                Ok(json!({ "__image_png": B64.encode(png), "url": url }))
+            }
             "policy" => Ok(json!({
                 "config_file": policy::policy_path(),
                 "policy": guard.policy,
@@ -274,6 +308,50 @@ impl Session {
             other => anyhow::bail!("unknown tool: {other}"),
         }
     }
+}
+
+/// Tool results are text, except a screenshot, which is handed over as an
+/// image block so the host can show it to a model that can see.
+fn content_for(v: Value) -> Vec<Value> {
+    if let Some(data) = v.get("__image_png").and_then(Value::as_str) {
+        let url = v.get("url").and_then(Value::as_str).unwrap_or_default();
+        return vec![
+            json!({ "type": "image", "data": data, "mimeType": "image/png" }),
+            text(&json!(format!("Screenshot of {url}"))),
+        ];
+    }
+    vec![text(&v)]
+}
+
+fn view_arg(args: &Value) -> String {
+    args.get("view")
+        .and_then(Value::as_str)
+        .unwrap_or("disk")
+        .to_string()
+}
+
+/// Filter arguments become URL parameters, so the link and the picture always
+/// show the same thing.
+fn url_params(args: &Value) -> Vec<(&'static str, String)> {
+    let get = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let num = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_f64)
+            .map(|n| n.to_string())
+            .unwrap_or_default()
+    };
+    vec![
+        ("dir", get("dir")),
+        ("category", get("category")),
+        ("find", get("find")),
+        ("days", num("days")),
+        ("min", num("min_bytes")),
+    ]
 }
 
 fn text(v: &Value) -> Value {
@@ -371,6 +449,41 @@ fn tool_specs() -> Vec<Value> {
             }), &["pid"]),
         }),
         json!({
+            "name": "open_ui",
+            "description": "Open the diskwise browser UI beside this conversation, starting the \
+                local server if it is not already up. Returns a URL whose filters match the \
+                arguments, so you can point the user at exactly what you are talking about.",
+            "inputSchema": obj(json!({
+                "path": path_prop,
+                "view": { "type": "string", "enum": ["disk", "processes"], "description": "Which tab to open. Default disk." },
+                "dir": { "type": "string", "description": "Open the disk view browsing this directory." },
+                "category": { "type": "string" },
+                "find": { "type": "string", "description": "Process filter text." },
+                "days": { "type": "number", "description": "Processes running at least this long." },
+                "min_bytes": { "type": "number" },
+                "port": { "type": "number", "description": "Default 7373." },
+                "open_browser": { "type": "boolean", "description": "Default true. False just returns the URL." }
+            }), &[]),
+        }),
+        json!({
+            "name": "screenshot",
+            "description": "Render the UI to a PNG and return it as an image, so you can look \
+                at the treemap yourself — useful for checking layout, or answering a question \
+                about what the user is seeing on screen. Takes the same filters as open_ui.",
+            "inputSchema": obj(json!({
+                "path": path_prop,
+                "view": { "type": "string", "enum": ["disk", "processes"] },
+                "dir": { "type": "string" },
+                "category": { "type": "string" },
+                "find": { "type": "string" },
+                "days": { "type": "number" },
+                "min_bytes": { "type": "number" },
+                "width": { "type": "number", "description": "Default 1440." },
+                "height": { "type": "number", "description": "Default 900." },
+                "port": { "type": "number" }
+            }), &[]),
+        }),
+        json!({
             "name": "policy",
             "description": "The user's current safety policy and where to change it.",
             "inputSchema": obj(json!({}), &[]),
@@ -399,7 +512,7 @@ mod tests {
 
         let tools = s.dispatch("tools/list", json!({})).unwrap();
         let tools = tools["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 12);
         for t in tools {
             assert!(t["name"].is_string());
             assert!(t["description"].as_str().unwrap().len() > 20);

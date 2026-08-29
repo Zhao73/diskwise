@@ -20,8 +20,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 trash = "5"
 tar = "0.4"
 zstd = "0.13"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3
 lto = true
 strip = true
+
+[dev-dependencies]
+serde_json = "1"

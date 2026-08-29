@@ -94,9 +94,35 @@ command = "diskwise"
 args = ["mcp"]
 ```
 
-Ten tools: `top_offenders`, `explain_path`, `plan_cleanup`, `apply_cleanup`,
+Twelve tools: `top_offenders`, `explain_path`, `plan_cleanup`, `apply_cleanup`,
 `archive_path`, `list_archives`, `restore_archive`, `list_processes`,
-`kill_process`, `policy`.
+`kill_process`, `policy`, `open_ui`, `screenshot`.
+
+### Putting the page next to the conversation
+
+`open_ui` starts the local server if it is not already up and opens the browser
+on exactly the view being discussed — every filter lives in the URL, so the
+agent hands you a link to the thing it is describing:
+
+```
+open_ui { "view": "processes", "days": 3 }
+  -> http://127.0.0.1:7373/?days=3#processes
+```
+
+It reuses a server that is already running rather than starting a second one.
+
+`screenshot` renders that same view headlessly and returns it as an **image
+block**, so a model that can see gets to look at the treemap itself instead of
+being told about it — useful for "what am I looking at here?" and for checking
+the layout after a change.
+
+```
+screenshot { "view": "disk", "dir": "~/.codex", "width": 1440 }
+  -> [image/png] + the URL it came from
+```
+
+Needs Google Chrome (or Chromium/Edge/Brave) for the headless render; without
+one it says so rather than failing quietly.
 
 **An agent cannot delete your files on its own.** `apply_cleanup` returns the
 plan and the command *you* have to run:
